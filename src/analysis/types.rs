@@ -5,6 +5,7 @@ use std::fmt::Display;
 #[derive(Debug, Clone)]
 pub enum Variable {
     NotTensor,
+    // AxixLength { axis: u32, root: Identifier, loc: Location }
     Tensor(Shape),
 }
 
@@ -33,14 +34,4 @@ impl Shape {
 pub enum Axis {
     Named(String),
     Concrete(u32),
-}
-
-impl Display for Axis {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Axis::Concrete(c) => f.write_fmt(format_args!("{c}"))?,
-            Axis::Named(n) => f.write_fmt(format_args!("{n}"))?,
-        }
-        Ok(())
-    }
 }

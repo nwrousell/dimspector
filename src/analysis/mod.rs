@@ -1,43 +1,23 @@
+mod errors;
 mod print;
 mod types;
-use miette::{Diagnostic, Result, SourceSpan};
-use std::{collections::HashMap, fmt::Display};
-use thiserror::Error;
+use miette::{Result, SourceSpan};
+use std::collections::{HashMap, HashSet};
 
 use rustpython_parser::ast::Ranged;
 use rustpython_parser::ast::{Expr, Identifier, StmtFunctionDef};
 
+use crate::analysis::errors::ShapeError;
 use crate::{
     analysis::types::{Axis, Shape},
-    ast::Program,
+    ir::{Function, Program},
 };
 use types::Variable;
 
-#[derive(Diagnostic, Error, Debug)]
-pub enum ShapeError {
-    #[error("Mismatched dims: {dim1} != {dim2}")]
-    #[diagnostic(code(shape::mismatched_dims))]
-    MismatchedDims {
-        dim1: Axis,
-        dim2: Axis,
-        #[label("mismatch occurs here")]
-        span: SourceSpan,
-    },
-}
-
-struct FunctionAnalysis {
-    func: StmtFunctionDef,
-    domain: HashMap<Identifier, Variable>,
-}
-
-impl Display for FunctionAnalysis {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!("{}:\n", self.func.name))?;
-        for (k, v) in self.domain.iter() {
-            f.write_fmt(format_args!("{k} -> {v:?}\n"))?;
-        }
-        Ok(())
-    }
+pub struct FunctionAnalysis {
+    // func: StmtFunctionDef,
+    func: Function,
+    domain: HashMap<Identifier, HashSet<Variable>>,
 }
 
 impl FunctionAnalysis {

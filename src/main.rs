@@ -6,6 +6,7 @@ use crate::{analysis::analyze, ast::Input};
 
 mod analysis;
 mod ast;
+mod ir;
 
 #[derive(Parser, Debug)]
 struct Args {

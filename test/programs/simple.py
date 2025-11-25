@@ -6,9 +6,12 @@ class T(Generic(str)): ...
 
 
 def f(A: T["a b"]):
-    B = A
-    C = B + 2
-    D = A @ B
+    a = zeros(10, 20) if 2 else ones(20, 10)
+    if 1 < 2:
+        B = A
+    else:
+        C = B + 2
+    D = C @ B
 
 
 # a = torch.zeros(5, 3)
