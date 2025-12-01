@@ -42,7 +42,9 @@ impl BasicBlock {
     }
 }
 
-pub struct Identifier {}
+pub struct Identifier {
+    name: String,
+}
 
 pub struct Statement {
     pub value: Expr,
