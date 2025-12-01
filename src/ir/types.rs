@@ -1,22 +1,52 @@
-use petgraph::graph::DiGraph;
+use petgraph::graph::{DiGraph, NodeIndex};
+use torch_infer2::utils;
 
 pub struct Program {
     pub functions: Vec<Function>,
 }
 
+type Cfg = DiGraph<BasicBlock, ()>;
+
 pub struct Function {
-    cfg: DiGraph<BasicBlock, ()>,
+    // param info
+    // body features
+    cfg: Cfg,
+    rpo: Vec<NodeIndex>,
+}
+
+impl Function {
+    pub fn new(cfg: Cfg) -> Function {
+        let rpo: Vec<NodeIndex> = utils::reverse_post_order(&cfg, 0.into())
+            .into_iter()
+            .collect();
+
+        Self { cfg, rpo }
+    }
+
+    pub fn blocks(&self) -> impl DoubleEndedIterator<Item = NodeIndex> {
+        self.rpo.iter().copied()
+    }
+
+    pub fn data(&self, idx: NodeIndex) -> &BasicBlock {
+        self.cfg.node_weight(idx).unwrap()
+    }
 }
 
 pub struct BasicBlock {
     stmts: Vec<Statement>,
 }
 
+impl BasicBlock {
+    pub fn statements(&self) -> &Vec<Statement> {
+        &self.stmts
+    }
+}
+
 pub struct Identifier {}
 
 pub struct Statement {
-    value: Expr,
-    target: Option<Identifier>,
+    pub value: Expr,
+    pub target: Option<Identifier>,
 }
 
 pub enum Expr {
@@ -31,5 +61,5 @@ pub enum Expr {
         args: Vec<Expr>,
     },
     Constant,
-    Identifier,
+    Identifier(Identifier),
 }

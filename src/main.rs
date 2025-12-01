@@ -2,11 +2,13 @@ use clap::Parser;
 use miette::{MietteHandlerOpts, Result};
 use std::path::PathBuf;
 
-use crate::{analysis::analyze, ast::Input};
+use crate::ast::Input;
+use crate::shape_analysis::analyze;
 
 mod analysis;
 mod ast;
 mod ir;
+mod shape_analysis;
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -37,8 +39,9 @@ fn main() -> Result<()> {
 fn run(_args: &Args, input: &Input) -> Result<()> {
     let program = ast::parse(input)?;
     log::debug!("AST:\n{}", program);
+    let ir = ir::lower(program)?; // TODO: make actually work w/ IR
 
-    analyze(program)?;
+    analyze(ir)?;
 
     Ok(())
 }
