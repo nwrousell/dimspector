@@ -9,10 +9,10 @@ use rustpython_parser::ast::{Expr, Identifier, StmtFunctionDef};
 
 use crate::analysis::errors::ShapeError;
 use crate::{
-    analysis::types::{Axis, Shape},
+    analysis::types::Axis,
     ir::{Function, Program},
 };
-use types::Variable;
+pub use types::{Shape, Variable};
 
 pub struct FunctionAnalysis {
     // func: StmtFunctionDef,

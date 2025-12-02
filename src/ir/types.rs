@@ -1,22 +1,68 @@
-use petgraph::graph::DiGraph;
+use petgraph::graph::{DiGraph, NodeIndex};
+use rustpython_parser::text_size::TextRange;
+
+use crate::analysis::Variable;
 
 pub struct Program {
     pub functions: Vec<Function>,
 }
 
+pub type CFG = DiGraph<BasicBlock, ()>;
+
 pub struct Function {
-    cfg: DiGraph<BasicBlock, ()>,
+    pub cfg: CFG,
+    pub params: Vec<(Identifier, Variable)>,
 }
+
+pub struct Annotation;
 
 pub struct BasicBlock {
-    stmts: Vec<Statement>,
+    pub statements: Vec<Statement>,
+    pub terminator: Terminator,
 }
 
-pub struct Identifier {}
+pub enum Terminator {
+    Jump(BasicBlockIdx),
+    CondJump {
+        cond: Expr,
+        true_dst: BasicBlockIdx,
+        false_dst: BasicBlockIdx,
+    },
+    Return(Expr),
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct BasicBlockIdx(usize);
+
+impl BasicBlockIdx {
+    fn new(idx: usize) -> Self {
+        BasicBlockIdx(idx)
+    }
+}
+
+impl From<NodeIndex> for BasicBlockIdx {
+    fn from(value: NodeIndex) -> Self {
+        BasicBlockIdx::new(value.index())
+    }
+}
+
+impl From<BasicBlockIdx> for NodeIndex {
+    fn from(value: BasicBlockIdx) -> Self {
+        NodeIndex::new(value.0)
+    }
+}
+
+pub struct Location {
+    pub block: BasicBlockIdx,
+    pub instr: usize,
+}
+
+pub type Identifier = rustpython_parser::ast::Identifier;
 
 pub struct Statement {
-    value: Expr,
-    target: Option<Identifier>,
+    pub value: Expr,
+    pub target: Option<Identifier>,
+    pub range: TextRange,
 }
 
 pub enum Expr {
