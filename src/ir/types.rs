@@ -5,6 +5,11 @@ use petgraph::{
 use smallvec::{SmallVec, smallvec};
 use torch_infer2::utils;
 
+use rustpython_parser::text_size::TextRange;
+
+use crate::analysis::Variable;
+
+
 pub struct Program {
     pub functions: Vec<Function>,
 }
@@ -20,8 +25,9 @@ pub struct Location {
 pub struct Function {
     // param info
     // body features
-    cfg: Cfg,
-    rpo: Vec<NodeIndex>,
+    pub cfg: Cfg,
+    pub params: Vec<(Identifier, Variable)>,
+    pub rpo: Vec<NodeIndex>,
 }
 
 impl Function {
@@ -59,28 +65,56 @@ impl Function {
     }
 }
 
+pub struct Annotation;
+
 pub struct BasicBlock {
-    stmts: Vec<Statement>,
+    pub statements: Vec<Statement>,
+    pub terminator: Terminator,
 }
 
-impl BasicBlock {
-    pub fn statements(&self) -> &Vec<Statement> {
-        &self.stmts
+pub enum Terminator {
+    Jump(BasicBlockIdx),
+    CondJump {
+        cond: Expr,
+        true_dst: BasicBlockIdx,
+        false_dst: BasicBlockIdx,
+    },
+    Return(Expr),
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct BasicBlockIdx(usize);
+
+impl BasicBlockIdx {
+    fn new(idx: usize) -> Self {
+        BasicBlockIdx(idx)
     }
+}
 
-    fn terminator_index(&self) -> usize {
-        self.stmts.len() - 1
+impl From<NodeIndex> for BasicBlockIdx {
+    fn from(value: NodeIndex) -> Self {
+        BasicBlockIdx::new(value.index())
     }
 }
 
-#[derive(Eq, Hash, PartialEq)]
-pub struct Identifier {
-    name: String,
+impl From<BasicBlockIdx> for NodeIndex {
+    fn from(value: BasicBlockIdx) -> Self {
+        NodeIndex::new(value.0)
+    }
 }
+
+pub struct Location {
+    pub block: BasicBlockIdx,
+    pub instr: usize,
+}
+
+
+pub type Identifier = rustpython_parser::ast::Identifier;
 
 pub struct Statement {
     pub value: Expr,
     pub target: Option<Identifier>,
+    pub range: TextRange,
 }
 
 pub enum Expr {
