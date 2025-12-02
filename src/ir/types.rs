@@ -1,17 +1,68 @@
-use petgraph::graph::{DiGraph, NodeIndex};
+use petgraph::{
+    Direction,
+    graph::{DiGraph, NodeIndex},
+};
+use smallvec::{SmallVec, smallvec};
+use torch_infer2::utils;
+
 use rustpython_parser::text_size::TextRange;
 
 use crate::analysis::Variable;
+
 
 pub struct Program {
     pub functions: Vec<Function>,
 }
 
-pub type CFG = DiGraph<BasicBlock, ()>;
+type Cfg = DiGraph<BasicBlock, ()>;
+
+#[derive(Eq, Hash, PartialEq)]
+pub struct Location {
+    pub block: NodeIndex,
+    pub instr: usize,
+}
 
 pub struct Function {
-    pub cfg: CFG,
+    // param info
+    // body features
+    pub cfg: Cfg,
     pub params: Vec<(Identifier, Variable)>,
+    pub rpo: Vec<NodeIndex>,
+}
+
+impl Function {
+    pub fn new(cfg: Cfg) -> Function {
+        let rpo: Vec<NodeIndex> = utils::reverse_post_order(&cfg, 0.into())
+            .into_iter()
+            .collect();
+
+        Self { cfg, rpo }
+    }
+
+    pub fn predecessors(&self, loc: Location) -> SmallVec<[Location; 2]> {
+        if loc.instr == 0 {
+            self.cfg
+                .neighbors_directed(loc.block.into(), Direction::Incoming)
+                .map(|block| {
+                    let instr = self.data(block).terminator_index();
+                    Location { block, instr }
+                })
+                .collect()
+        } else {
+            smallvec![Location {
+                block: loc.block,
+                instr: loc.instr - 1
+            }]
+        }
+    }
+
+    pub fn blocks(&self) -> impl DoubleEndedIterator<Item = NodeIndex> {
+        self.rpo.iter().copied()
+    }
+
+    pub fn data(&self, idx: NodeIndex) -> &BasicBlock {
+        self.cfg.node_weight(idx).unwrap()
+    }
 }
 
 pub struct Annotation;
@@ -57,6 +108,7 @@ pub struct Location {
     pub instr: usize,
 }
 
+
 pub type Identifier = rustpython_parser::ast::Identifier;
 
 pub struct Statement {
@@ -77,5 +129,5 @@ pub enum Expr {
         args: Vec<Expr>,
     },
     Constant,
-    Identifier,
+    Identifier(Identifier),
 }

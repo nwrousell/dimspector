@@ -17,7 +17,7 @@ use crate::{
 mod print;
 mod types;
 
-fn lower(program: rustpython_parser::ast::ModModule) -> Result<Program, Error> {
+pub fn lower(program: rustpython_parser::ast::ModModule) -> Result<Program, Error> {
     Ok(Program {
         functions: Vec::new(),
     })
