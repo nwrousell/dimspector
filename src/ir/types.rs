@@ -9,7 +9,6 @@ use rustpython_parser::text_size::TextRange;
 
 use crate::analysis::Variable;
 
-
 pub struct Program {
     pub functions: Vec<Function>,
 }
@@ -18,7 +17,7 @@ type Cfg = DiGraph<BasicBlock, ()>;
 
 #[derive(Eq, Hash, PartialEq)]
 pub struct Location {
-    pub block: NodeIndex,
+    pub block: BasicBlockIdx,
     pub instr: usize,
 }
 
@@ -31,12 +30,12 @@ pub struct Function {
 }
 
 impl Function {
-    pub fn new(cfg: Cfg) -> Function {
+    pub fn new(cfg: Cfg, params: Vec<(Identifier, Variable)>) -> Function {
         let rpo: Vec<NodeIndex> = utils::reverse_post_order(&cfg, 0.into())
             .into_iter()
             .collect();
 
-        Self { cfg, rpo }
+        Self { cfg, rpo, params }
     }
 
     pub fn predecessors(&self, loc: Location) -> SmallVec<[Location; 2]> {
@@ -44,8 +43,11 @@ impl Function {
             self.cfg
                 .neighbors_directed(loc.block.into(), Direction::Incoming)
                 .map(|block| {
-                    let instr = self.data(block).terminator_index();
-                    Location { block, instr }
+                    let instr = self.data(block).statements.len();
+                    Location {
+                        block: block.into(),
+                        instr,
+                    }
                 })
                 .collect()
         } else {
@@ -82,7 +84,7 @@ pub enum Terminator {
     Return(Expr),
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct BasicBlockIdx(usize);
 
 impl BasicBlockIdx {
@@ -102,12 +104,6 @@ impl From<BasicBlockIdx> for NodeIndex {
         NodeIndex::new(value.0)
     }
 }
-
-pub struct Location {
-    pub block: BasicBlockIdx,
-    pub instr: usize,
-}
-
 
 pub type Identifier = rustpython_parser::ast::Identifier;
 
