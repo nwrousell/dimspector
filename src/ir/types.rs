@@ -1,4 +1,8 @@
-use petgraph::graph::{DiGraph, NodeIndex};
+use petgraph::{
+    Direction,
+    graph::{DiGraph, NodeIndex},
+};
+use smallvec::{SmallVec, smallvec};
 use torch_infer2::utils;
 
 pub struct Program {
@@ -6,6 +10,12 @@ pub struct Program {
 }
 
 type Cfg = DiGraph<BasicBlock, ()>;
+
+#[derive(Eq, Hash, PartialEq)]
+pub struct Location {
+    pub block: NodeIndex,
+    pub instr: usize,
+}
 
 pub struct Function {
     // param info
@@ -21,6 +31,23 @@ impl Function {
             .collect();
 
         Self { cfg, rpo }
+    }
+
+    pub fn predecessors(&self, loc: Location) -> SmallVec<[Location; 2]> {
+        if loc.instr == 0 {
+            self.cfg
+                .neighbors_directed(loc.block.into(), Direction::Incoming)
+                .map(|block| {
+                    let instr = self.data(block).terminator_index();
+                    Location { block, instr }
+                })
+                .collect()
+        } else {
+            smallvec![Location {
+                block: loc.block,
+                instr: loc.instr - 1
+            }]
+        }
     }
 
     pub fn blocks(&self) -> impl DoubleEndedIterator<Item = NodeIndex> {
@@ -40,8 +67,13 @@ impl BasicBlock {
     pub fn statements(&self) -> &Vec<Statement> {
         &self.stmts
     }
+
+    fn terminator_index(&self) -> usize {
+        self.stmts.len() - 1
+    }
 }
 
+#[derive(Eq, Hash, PartialEq)]
 pub struct Identifier {
     name: String,
 }

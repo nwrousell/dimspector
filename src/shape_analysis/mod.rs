@@ -10,24 +10,26 @@ use itertools::{Itertools, rev};
 use petgraph::graph::NodeIndex;
 use types::Variable;
 
-use crate::ir::types::{Expr, Identifier, Statement};
+use crate::ir::types::{Expr, Identifier, Location, Statement};
 use crate::ir::{Function, Program};
 use crate::shape_analysis::errors::ShapeError;
 use crate::shape_analysis::types::{DimKind, DimVar, Shape};
 use miette::{Result, miette};
+
+type AnalysisDomain = HashMap<Identifier, Variable>;
 
 pub struct FunctionAnalysis {
     // func: StmtFunctionDef,
     // func: Function,
     // TODO: currently just using Hash{Set,Map}s, but would beneifit perhaps
     // from inenvitably using bitsets, if the speedup is worth it
-    domain: HashMap<Identifier, HashSet<Variable>>,
+    state: HashMap<Location, Variable>,
 }
 
 impl FunctionAnalysis {
     fn new() -> Self {
         Self {
-            domain: HashMap::new(),
+            state: HashMap::new(),
         }
     }
 
@@ -72,7 +74,7 @@ impl FunctionAnalysis {
         }
     }
 
-    fn eval_expr(&mut self, expr: &Expr) -> Result<HashSet<Shape>> {
+    fn eval_expr(&mut self, expr: &Expr) -> Result<Variable> {
         // TODO:
         // - flows of dimvars out of .shape or .size()
         // - reshapes, rearranges
@@ -83,33 +85,51 @@ impl FunctionAnalysis {
                 right,
                 is_matmul,
             } => {
-                let l_shapes = self.eval_expr(left)?;
-                let r_shapes = self.eval_expr(right)?;
-
-                let mut out_shapes = HashSet::new();
-                for l_shape in l_shapes.iter() {
-                    for r_shape in r_shapes.iter() {
-                        if *is_matmul {
-                            // TODO: maybe this should just resolve to the tensor dot stub
-                        } else {
-                            let out_shape = self.broadcast_resolve(&l_shape, &r_shape)?;
-                            out_shapes.insert(out_shape);
+                let l_var = self.eval_expr(left)?;
+                let r_var = self.eval_expr(right)?;
+                match (l_var, r_var) {
+                    (Variable::Top, _) => Ok(Variable::Top),
+                    (Variable::Tensor(l_shapes), Variable::Tensor(r_shapes)) => {
+                        let mut out_shapes = HashSet::new();
+                        for l_shape in l_shapes.iter() {
+                            for r_shape in r_shapes.iter() {
+                                if *is_matmul {
+                                    // TODO: maybe this should just resolve to the tensor dot stub
+                                } else {
+                                    let out_shape = self.broadcast_resolve(&l_shape, &r_shape)?;
+                                    out_shapes.insert(out_shape);
+                                }
+                            }
                         }
+                        Ok(Variable::Tensor(out_shapes))
                     }
+                    (Variable::Tensor(shapes), _) | (_, Variable::Tensor(shapes)) => {
+                        // other should be some number, will retain tensor operand shape
+                        Ok(Variable::Tensor(shapes))
+                    }
+                    (Variable::DimVar(l_dvar), _) => {
+                        // hopefully this doesn't happen for now, in the future we want to model symbolic
+                        // expressions on our symbolic variable dimvars
+                        Ok(Variable::DimVar(l_dvar))
+                    }
+                    (Variable::NonTensor, _) => Ok(Variable::NonTensor),
                 }
             }
             Expr::Call {
                 receiver,
                 function,
                 args,
-            } => {}
-            Expr::Constant => {}
-            Expr::Identifier(id) => {}
+            } => Ok(todo!()),
+            Expr::Constant => Ok(todo!()),
+            Expr::Identifier(id) => Ok(todo!()),
         }
-        Ok(HashSet::new())
     }
 
     fn analyze_stmt(&mut self, stmt: &Statement) -> Result<()> {
+        let res_var = self.eval_expr(&stmt.value);
+        if let Some(id) = &stmt.target {
+            self.domain.insert(id);
+        }
         Ok(())
     }
 

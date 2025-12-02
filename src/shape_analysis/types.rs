@@ -1,6 +1,6 @@
 // NOTE: this representation disallows A[..., d] shapes
 
-use std::fmt::Display;
+use std::{collections::HashSet, fmt::Display};
 
 use crate::ir::types::Identifier;
 
@@ -31,7 +31,8 @@ impl DimVar {
 pub enum Variable {
     NonTensor,
     DimVar(DimVar),
-    Tensor(Shape),
+    Tensor(HashSet<Shape>),
+    Top,
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
