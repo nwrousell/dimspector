@@ -5,7 +5,9 @@ use crate::utils::{indent, write_comma_separated};
 
 use crate::ir::{
     Function, Program,
-    types::{BasicBlock, BasicBlockIdx, Expr, ExprKind, Parameter, Path, Statement, Terminator},
+    types::{
+        BasicBlock, BasicBlockIdx, Binop, Expr, ExprKind, Parameter, Path, Statement, Terminator,
+    },
 };
 
 impl fmt::Display for Program {
@@ -76,12 +78,7 @@ impl fmt::Display for Expr {
                 write_comma_separated(f, slice)?;
                 write!(f, "]")
             }
-            ExprKind::Binop {
-                left,
-                right,
-                is_matmul,
-            } => {
-                let op = if *is_matmul { "@" } else { "+" }; // Default to + for non-matmul
+            ExprKind::Binop { left, right, op } => {
                 write!(f, "{} {} {}", left, op, right)
             }
             ExprKind::Call {
@@ -140,6 +137,7 @@ impl fmt::Display for DimRange {
 impl fmt::Display for Constant {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Constant::None => write!(f, "None"),
             Constant::Bool(b) => write!(f, "{}", b),
             Constant::Str(s) => write!(f, "'{}'", s),
             Constant::Int(i) => write!(f, "{}", i),
@@ -184,15 +182,21 @@ impl fmt::Display for Terminator {
                 cond,
                 true_dst,
                 false_dst,
-            } => {
-                write!(
+            } => match cond {
+                Some(cond) => write!(
                     f,
                     "jmp bb{} if {} else bb{}",
                     true_dst.index(),
                     cond,
                     false_dst.index()
-                )
-            }
+                ),
+                None => write!(
+                    f,
+                    "jmp bb{} if ? else bb{}",
+                    true_dst.index(),
+                    false_dst.index()
+                ),
+            },
         }
     }
 }
@@ -206,5 +210,36 @@ impl fmt::Display for Path {
             write!(f, "{}", part)?;
         }
         Ok(())
+    }
+}
+
+impl fmt::Display for Binop {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Binop::Add => write!(f, "+"),
+            Binop::Sub => write!(f, "-"),
+            Binop::Mult => write!(f, "*"),
+            Binop::Div => write!(f, "/"),
+            Binop::MatMult => write!(f, "@"),
+            Binop::Mod => write!(f, "%"),
+            Binop::Pow => write!(f, "**"),
+            Binop::FloorDiv => write!(f, "//"),
+            Binop::Eq => write!(f, "=="),
+            Binop::NotEq => write!(f, "!="),
+            Binop::Lt => write!(f, "<"),
+            Binop::Lte => write!(f, "<="),
+            Binop::Gt => write!(f, ">"),
+            Binop::Gte => write!(f, ">="),
+            Binop::Is => write!(f, "is"),
+            Binop::IsNot => write!(f, "is not"),
+            Binop::In => write!(f, "in"),
+            Binop::NotIn => write!(f, "not in"),
+            Binop::And => write!(f, "and"),
+            Binop::LShift => write!(f, "<<"),
+            Binop::RShift => write!(f, ">>"),
+            Binop::BitOr => write!(f, "|"),
+            Binop::BitXor => write!(f, "^"),
+            Binop::BitAnd => write!(f, "&"),
+        }
     }
 }

@@ -1,20 +1,22 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use anyhow::Result;
+use itertools::Itertools;
 use petgraph::{
     graph::NodeIndex,
     visit::{Dfs, EdgeRef, Walker},
 };
 use rustpython_parser::{
     ast::{
-        Expr as ASTExpr, ExprAttribute, ExprBinOp, ExprCall, ExprConstant, ExprName, ExprSlice,
-        ExprSubscript, ExprTuple, ExprUnaryOp, Keyword, Stmt as ASTStmt, StmtAssign, StmtAugAssign,
-        StmtExpr, StmtFunctionDef as ASTFunction, StmtIf, StmtReturn,
+        Expr as ASTExpr, ExprAttribute, ExprBinOp, ExprCall, ExprCompare, ExprConstant, ExprName,
+        ExprSlice, ExprSubscript, ExprTuple, ExprUnaryOp, Keyword, Stmt as ASTStmt, StmtAssign,
+        StmtAugAssign, StmtExpr, StmtFor, StmtFunctionDef as ASTFunction, StmtIf, StmtReturn,
+        StmtWhile,
     },
     text_size::TextRange,
 };
 
-use crate::ir::types::Function;
+use crate::ir::types::{Binop, Constant, Function};
 use crate::{
     analysis::{Shape, Variable},
     ir::types::{BasicBlock, BasicBlockIdx, Cfg, Expr, PartialCfg, Path, Statement, Terminator},
@@ -225,7 +227,42 @@ impl LowerBody {
                 self.add_statement(value, None, range);
             }
 
-            ASTStmt::While(stmt_whiles) => todo!(),
+            ASTStmt::While(StmtWhile {
+                body, orelse, test, ..
+            }) => {
+                if orelse.len() > 1 {
+                    todo!("handle while else")
+                }
+
+                let cond_block = self.new_block();
+                let body_block = self.new_block();
+                let after_block = self.new_block();
+
+                // jmp to cond block
+                let jmp = Terminator::Jump(cond_block);
+                self.finish_block(Some(cond_block), jmp);
+
+                // which jumps to body or new block
+                let cond = self.lower_expr_to_expr(*test)?;
+                let jmp = Terminator::CondJump {
+                    cond: Some(cond),
+                    true_dst: body_block,
+                    false_dst: after_block,
+                };
+                self.finish_block(Some(body_block), jmp);
+
+                // lower body, jump to cond block
+                self.lower_body(body)?;
+                let jmp = Terminator::Jump(cond_block);
+                match self.cur_loc {
+                    Some(_) => {
+                        self.finish_block(Some(after_block), jmp);
+                    }
+                    None => {
+                        self.cur_loc = Some(after_block);
+                    }
+                };
+            }
             ASTStmt::If(StmtIf {
                 body, orelse, test, ..
             }) => {
@@ -237,7 +274,7 @@ impl LowerBody {
                 // cond jump from current to then/else
                 let cond = self.lower_expr_to_expr(*test)?;
                 let jmp = Terminator::CondJump {
-                    cond,
+                    cond: Some(cond),
                     true_dst: then_block,
                     false_dst: else_block,
                 };
@@ -247,7 +284,7 @@ impl LowerBody {
                 let jmp = Terminator::Jump(join_block);
                 self.lower_body(body)?;
                 match self.cur_loc {
-                    Some(cur_loc) => {
+                    Some(_) => {
                         self.finish_block(Some(else_block), jmp.clone());
                     }
                     None => self.cur_loc = Some(else_block),
@@ -256,13 +293,45 @@ impl LowerBody {
                 // lower else body
                 self.lower_body(orelse)?;
                 match self.cur_loc {
-                    Some(cur_loc) => {
+                    Some(_) => {
                         self.finish_block(Some(join_block), jmp);
                     }
                     None => self.cur_loc = Some(join_block),
                 };
             }
-            ASTStmt::For(stmt_for) => todo!(),
+            ASTStmt::For(StmtFor { body, orelse, .. }) => {
+                if orelse.len() > 1 {
+                    todo!("handle for else")
+                }
+
+                let cond_block = self.new_block();
+                let body_block = self.new_block();
+                let after_block = self.new_block();
+
+                // jmp to cond block
+                let jmp = Terminator::Jump(cond_block);
+                self.finish_block(Some(cond_block), jmp);
+
+                // which jumps to body block or after block
+                let jmp = Terminator::CondJump {
+                    cond: None, // we're not modeling this, as next(iter) is complex
+                    true_dst: body_block,
+                    false_dst: after_block,
+                };
+                self.finish_block(Some(body_block), jmp);
+
+                // lower body
+                self.lower_body(body)?;
+                let jmp = Terminator::Jump(cond_block);
+                match self.cur_loc {
+                    Some(_) => {
+                        self.finish_block(Some(after_block), jmp);
+                    }
+                    None => {
+                        self.cur_loc = Some(after_block);
+                    }
+                };
+            }
 
             ASTStmt::AugAssign(StmtAugAssign {
                 op,
@@ -322,14 +391,13 @@ impl LowerBody {
             }) => {
                 let left = self.lower_expr_to_expr(*left)?;
                 let right = self.lower_expr_to_expr(*right)?;
-                let is_matmul = match op {
-                    rustpython_parser::ast::Operator::MatMult => true,
-                    _ => false,
-                };
-                Ok(Expr::binop(left, right, is_matmul, range))
+                Ok(Expr::binop(left, right, Binop::from(op), range))
             }
 
-            ASTExpr::Constant(ExprConstant { range, .. }) => Ok(Expr::constant(range)),
+            ASTExpr::Constant(ExprConstant { range, value, .. }) => {
+                let constant = Constant::from(value);
+                Ok(Expr::constant(range, constant))
+            }
 
             ASTExpr::Call(ExprCall {
                 args,
@@ -391,6 +459,30 @@ impl LowerBody {
                 Ok(Expr::path(Path::new(&path), range))
             }
             ASTExpr::UnaryOp(ExprUnaryOp { operand, .. }) => self.lower_expr_to_expr(*operand),
+            ASTExpr::Compare(ExprCompare {
+                comparators,
+                left,
+                ops,
+                range,
+                ..
+            }) => {
+                let left = self.lower_expr_to_expr(*left)?;
+                let right = self.lower_expr_to_expr(comparators.first().unwrap().clone())?;
+                let mut bool_expr = Expr::binop(
+                    left,
+                    right,
+                    Binop::from(ops.first().unwrap().clone()),
+                    range,
+                );
+
+                for (cmp, op) in comparators.into_iter().zip_eq(ops).skip(1) {
+                    let left = bool_expr;
+                    let right = self.lower_expr_to_expr(cmp)?;
+                    bool_expr = Expr::binop(left, right, Binop::from(op), range);
+                }
+
+                Ok(bool_expr)
+            }
 
             ASTExpr::List(expr_list) => todo!(),
             ASTExpr::Tuple(expr_tuple) => todo!(),
@@ -410,7 +502,6 @@ impl LowerBody {
             ASTExpr::Await(expr_await) => todo!(),
             ASTExpr::Yield(expr_yield) => todo!(),
             ASTExpr::YieldFrom(expr_yield_from) => todo!(),
-            ASTExpr::Compare(expr_compare) => todo!(),
             ASTExpr::FormattedValue(expr_formatted_value) => todo!(),
             ASTExpr::JoinedStr(expr_joined_str) => todo!(),
             ASTExpr::Starred(expr_starred) => todo!(),
