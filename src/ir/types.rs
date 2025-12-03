@@ -7,7 +7,9 @@ use petgraph::{
 };
 use smallvec::{SmallVec, smallvec};
 
-use rustpython_parser::text_size::TextRange;
+use rustpython_parser::{ast::Constant as ASTConstant, text_size::TextRange};
+
+use num_traits::ToPrimitive;
 
 use crate::analysis::Variable;
 
@@ -228,11 +230,34 @@ impl Expr {
 
 #[derive(Clone)]
 pub enum Constant {
+    None,
     Bool(bool),
     Str(String),
-    Int(i32),
+    Int(i64),
     Tuple(Vec<Constant>),
     Float(f64),
+}
+
+impl From<ASTConstant> for Constant {
+    fn from(value: ASTConstant) -> Self {
+        match value {
+            ASTConstant::None => Self::None,
+            ASTConstant::Bool(b) => Self::Bool(b),
+            ASTConstant::Str(s) => Self::Str(s),
+            ASTConstant::Bytes(_) => Self::None,
+            ASTConstant::Int(big_int) => Self::Int(
+                big_int
+                    .to_i64()
+                    .expect("Constant BigInt too big/small for i64"),
+            ),
+            ASTConstant::Tuple(constants) => {
+                Self::Tuple(constants.into_iter().map(|c| Constant::from(c)).collect())
+            }
+            ASTConstant::Float(f) => Constant::Float(f),
+            ASTConstant::Complex { .. } => Self::None,
+            ASTConstant::Ellipsis => Self::None,
+        }
+    }
 }
 
 #[derive(Clone)]

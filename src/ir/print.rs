@@ -134,6 +134,7 @@ impl fmt::Display for DimRange {
 impl fmt::Display for Constant {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Constant::None => write!(f, "None"),
             Constant::Bool(b) => write!(f, "{}", b),
             Constant::Str(s) => write!(f, "'{}'", s),
             Constant::Int(i) => write!(f, "{}", i),

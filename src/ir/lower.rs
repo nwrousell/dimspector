@@ -14,7 +14,7 @@ use rustpython_parser::{
     text_size::TextRange,
 };
 
-use crate::ir::types::Function;
+use crate::ir::types::{Constant, Function};
 use crate::{
     analysis::{Shape, Variable},
     ir::types::{BasicBlock, BasicBlockIdx, Cfg, Expr, PartialCfg, Path, Statement, Terminator},
@@ -331,7 +331,10 @@ impl LowerBody {
                 Ok(Expr::binop(left, right, is_matmul, range))
             }
 
-            ASTExpr::Constant(ExprConstant { range, .. }) => Ok(Expr::constant(range)),
+            ASTExpr::Constant(ExprConstant { range, value, .. }) => {
+                let constant = Constant::from(value);
+                Ok(Expr::constant(range, constant))
+            }
 
             ASTExpr::Call(ExprCall {
                 args,
