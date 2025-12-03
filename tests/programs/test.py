@@ -1,2 +1,2 @@
-a = 3
-b = 3.0
+for i in range(3):
+    print(i)

@@ -7,7 +7,10 @@ use petgraph::{
 };
 use smallvec::{SmallVec, smallvec};
 
-use rustpython_parser::{ast::Constant as ASTConstant, text_size::TextRange};
+use rustpython_parser::{
+    ast::{CmpOp, Constant as ASTConstant, Operator},
+    text_size::TextRange,
+};
 
 use num_traits::ToPrimitive;
 
@@ -100,7 +103,10 @@ pub struct BasicBlock {
 pub enum Terminator {
     Jump(BasicBlockIdx),
     CondJump {
-        cond: Expr,
+        /// None when we choose not to model the condition (ex. next(iter)) but still
+        /// want to retain that this is a conditional jump
+        cond: Option<Expr>,
+
         true_dst: BasicBlockIdx,
         false_dst: BasicBlockIdx,
     },
@@ -184,12 +190,12 @@ pub struct Expr {
 }
 
 impl Expr {
-    pub fn binop(left: Expr, right: Expr, is_matmul: bool, range: TextRange) -> Expr {
+    pub fn binop(left: Expr, right: Expr, op: Binop, range: TextRange) -> Expr {
         Expr {
             kind: ExprKind::Binop {
                 left: Box::new(left),
                 right: Box::new(right),
-                is_matmul,
+                op,
             },
             range,
         }
@@ -261,11 +267,78 @@ impl From<ASTConstant> for Constant {
 }
 
 #[derive(Clone)]
+pub enum Binop {
+    Add,
+    Sub,
+    Div,
+    Mult,
+    MatMult,
+    Mod,
+    Pow,
+    FloorDiv,
+
+    Eq,
+    NotEq,
+    Is,
+    IsNot,
+    In,
+    NotIn,
+    Lt,
+    Lte,
+    Gt,
+    Gte,
+    And,
+
+    LShift,
+    RShift,
+    BitOr,
+    BitXor,
+    BitAnd,
+}
+
+impl From<CmpOp> for Binop {
+    fn from(value: CmpOp) -> Self {
+        match value {
+            CmpOp::Eq => Binop::Eq,
+            CmpOp::NotEq => Binop::NotEq,
+            CmpOp::Lt => Binop::Lt,
+            CmpOp::LtE => Binop::Lte,
+            CmpOp::Gt => Binop::Gt,
+            CmpOp::GtE => Binop::Gte,
+            CmpOp::Is => Binop::Is,
+            CmpOp::IsNot => Binop::IsNot,
+            CmpOp::In => Binop::In,
+            CmpOp::NotIn => Binop::NotIn,
+        }
+    }
+}
+
+impl From<Operator> for Binop {
+    fn from(value: Operator) -> Self {
+        match value {
+            Operator::Add => Binop::Add,
+            Operator::Sub => Binop::Sub,
+            Operator::Mult => Binop::Mult,
+            Operator::MatMult => Binop::MatMult,
+            Operator::Div => Binop::Div,
+            Operator::Mod => Binop::Mod,
+            Operator::Pow => Binop::Pow,
+            Operator::LShift => Binop::LShift,
+            Operator::RShift => Binop::RShift,
+            Operator::BitOr => Binop::BitOr,
+            Operator::BitXor => Binop::BitXor,
+            Operator::BitAnd => Binop::BitAnd,
+            Operator::FloorDiv => Binop::FloorDiv,
+        }
+    }
+}
+
+#[derive(Clone)]
 pub enum ExprKind {
     Binop {
         left: Box<Expr>,
         right: Box<Expr>,
-        is_matmul: bool,
+        op: Binop,
     },
     Call {
         receiver: Option<Path>,
