@@ -1,185 +1,154 @@
 mod errors;
 mod print;
 mod types;
-use miette::{Result, SourceSpan};
-use std::collections::{HashMap, HashSet};
 
-use rustpython_parser::ast::Ranged;
-use rustpython_parser::ast::{Expr, Identifier, StmtFunctionDef};
+// use std::cmp::max;
+// use std::collections::{HashMap, HashSet};
 
-use crate::analysis::errors::ShapeError;
-use crate::{
-    analysis::types::Axis,
-    ir::{Function, Program},
-};
+// use itertools::EitherOrBoth::{Both, Left, Right};
+// use itertools::Itertools;
 pub use types::{Shape, Variable};
 
-pub struct FunctionAnalysis {
-    // func: StmtFunctionDef,
-    func: Function,
-    domain: HashMap<Identifier, HashSet<Variable>>,
-}
+// use crate::ir::{Expr, Statement};
+// use crate::ir::{Function, Program};
+// use crate::shape_analysis::errors::ShapeError;
+// use crate::shape_analysis::types::{DimKind, DimVar};
+// use miette::Result;
 
-impl FunctionAnalysis {
-    fn new(func: StmtFunctionDef) -> Self {
-        Self {
-            func,
-            domain: HashMap::new(),
-        }
-    }
+// type AnalysisDomain = HashMap<Identifier, Variable>;
 
-    fn parse_args(&mut self) {
-        for arg in self.func.args.args.clone() {
-            let identifier = arg.def.arg;
-            if let Some(annotation) = arg.def.annotation {
-                if let Expr::Subscript(subscript) = *annotation {
-                    if let Expr::Name(name) = *subscript.value {
-                        if name.id.as_str() == "T" {
-                            if let Expr::Constant(shape_str) = *subscript.slice {
-                                let shape_str = shape_str.value.expect_str();
-                                self.domain.insert(
-                                    identifier,
-                                    Variable::Tensor(Shape::from_str(&shape_str)),
-                                );
-                            } else {
-                                self.domain
-                                    .insert(identifier, Variable::Tensor(Shape::Unknown));
-                            }
-                        } else {
-                            self.domain.insert(identifier, Variable::NotTensor);
-                        }
-                    } else {
-                        self.domain.insert(identifier, Variable::NotTensor);
-                    }
-                } else {
-                    self.domain.insert(identifier, Variable::NotTensor);
-                }
-            } else {
-                self.domain.insert(identifier, Variable::NotTensor);
-            }
-        }
-    }
+// pub struct FunctionAnalysis {
+//     // func: StmtFunctionDef,
+//     // func: Function,
+//     // TODO: currently just using Hash{Set,Map}s, but would beneifit perhaps
+//     // from inenvitably using bitsets, if the speedup is worth it
+//     state: HashMap<Location, Variable>,
+// }
 
-    fn resolve_var(&self, id: &Identifier) -> Variable {
-        self.domain.get(id).unwrap_or(&Variable::NotTensor).clone()
-    }
+// impl FunctionAnalysis {
+//     fn new() -> Self {
+//         Self {
+//             state: HashMap::new(),
+//         }
+//     }
 
-    /// Convert a rustpython_parser TextRange to a miette SourceSpan
-    fn text_range_to_source_span<T: Ranged>(node: &T) -> SourceSpan {
-        let range = node.range();
-        let start: usize = range.start().into();
-        let end: usize = range.end().into();
-        let length = end - start;
-        SourceSpan::new(start.into(), length.into())
-    }
+//     fn broadcast_resolve(&self, l_shape: &Shape, r_shape: &Shape) -> Result<Shape> {
+//         match (l_shape, r_shape) {
+//             (Shape::Known(l_shape), Shape::Known(r_shape)) => {
+//                 let mut out_shape = Vec::new();
+//                 for pair in l_shape.iter().rev().zip_longest(r_shape.iter().rev()) {
+//                     out_shape.push(match pair {
+//                         Both(l_dim, r_dim) => match (l_dim.kind(), r_dim.kind()) {
+//                             (DimKind::Named(l_sym), DimKind::Named(r_sym)) => {
+//                                 // TODO: should we assert they are the same symbol, or potent add constraint?
+//                                 if l_sym != r_sym {
+//                                     let err = ShapeError::mismatched(l_dim, r_dim);
+//                                     return Err(err.into());
+//                                 }
+//                                 l_dim.clone()
+//                             }
+//                             (DimKind::Named(sym), DimKind::Concrete(n))
+//                             | (DimKind::Concrete(n), DimKind::Named(sym)) => {
+//                                 if n != 1 {
+//                                     let err = ShapeError::mismatched(l_dim, r_dim);
+//                                     return Err(err.into());
+//                                 }
+//                                 DimVar::new(DimKind::Named(sym))
+//                             }
+//                             (DimKind::Concrete(l_n), DimKind::Concrete(r_n)) => {
+//                                 if l_n != r_n && (l_n != 1 && r_n != 1) {
+//                                     let err = ShapeError::mismatched(l_dim, r_dim);
+//                                     return Err(err.into());
+//                                 }
+//                                 DimVar::new(DimKind::Concrete(max(l_n, r_n)))
+//                             }
+//                         },
+//                         Left(v) | Right(v) => v.clone(),
+//                     });
+//                 }
+//                 out_shape.reverse();
+//                 Ok(Shape::Known(out_shape))
+//             }
+//             (_, _) => Ok(Shape::Unknown), // TODO:
+//         }
+//     }
 
-    fn axes_matching(&self, a1: &Axis, a2: &Axis, span: SourceSpan) -> Result<()> {
-        let is_error = match (a1, a2) {
-            (Axis::Named(n1), Axis::Named(n2)) => n1 != n2,
-            (Axis::Concrete(c1), Axis::Concrete(c2)) => c1 != c2,
-            (Axis::Named(_), Axis::Concrete(_)) => false,
-            (Axis::Concrete(_), Axis::Named(_)) => false,
-        };
+//     fn eval_expr(&mut self, expr: &Expr) -> Result<Variable> {
+//         // TODO:
+//         // - flows of dimvars out of .shape or .size()
+//         // - reshapes, rearranges
+//         // - pytorch stub representation (in IR)
+//         match expr {
+//             Expr::Binop {
+//                 left,
+//                 right,
+//                 is_matmul,
+//             } => {
+//                 let l_var = self.eval_expr(left)?;
+//                 let r_var = self.eval_expr(right)?;
+//                 match (l_var, r_var) {
+//                     (Variable::Top, _) => Ok(Variable::Top),
+//                     (Variable::Tensor(l_shapes), Variable::Tensor(r_shapes)) => {
+//                         let mut out_shapes = HashSet::new();
+//                         for l_shape in l_shapes.iter() {
+//                             for r_shape in r_shapes.iter() {
+//                                 if *is_matmul {
+//                                     // TODO: maybe this should just resolve to the tensor dot stub
+//                                 } else {
+//                                     let out_shape = self.broadcast_resolve(&l_shape, &r_shape)?;
+//                                     out_shapes.insert(out_shape);
+//                                 }
+//                             }
+//                         }
+//                         Ok(Variable::Tensor(out_shapes))
+//                     }
+//                     (Variable::Tensor(shapes), _) | (_, Variable::Tensor(shapes)) => {
+//                         // other should be some number, will retain tensor operand shape
+//                         Ok(Variable::Tensor(shapes))
+//                     }
+//                     (Variable::DimVar(l_dvar), _) => {
+//                         // hopefully this doesn't happen for now, in the future we want to model symbolic
+//                         // expressions on our symbolic variable dimvars
+//                         Ok(Variable::DimVar(l_dvar))
+//                     }
+//                     (Variable::NonTensor, _) => Ok(Variable::NonTensor),
+//                 }
+//             }
+//             Expr::Call {
+//                 receiver,
+//                 function,
+//                 args,
+//             } => Ok(todo!()),
+//             Expr::Constant => Ok(todo!()),
+//             Expr::Identifier(id) => Ok(todo!()),
+//         }
+//     }
 
-        if is_error {
-            let err = ShapeError::MismatchedDims {
-                dim1: a1.clone(),
-                dim2: a2.clone(),
-                span,
-            };
-            Err(err.into())
-        } else {
-            Ok(())
-        }
-    }
+//     fn analyze_stmt(&mut self, stmt: &Statement) -> Result<()> {
+//         let res_var = self.eval_expr(&stmt.value);
+//         if let Some(id) = &stmt.target {
+//             self.domain.insert(id);
+//         }
+//         Ok(())
+//     }
 
-    fn handle_expr(&self, expr: Expr) -> Result<Variable> {
-        match expr {
-            Expr::BinOp(expr) => {
-                // Get the range before moving parts of expr
-                let span = Self::text_range_to_source_span(&expr);
-                let left = self.handle_expr(*expr.left)?;
-                let right = self.handle_expr(*expr.right)?;
+//     fn analyze_func(func: &Function) -> Result<FunctionAnalysis> {
+//         let mut analysis = Self::new();
+//         let blocks: Vec<_> = func.blocks().collect();
+//         for block in blocks {
+//             let block = func.data(block);
+//             for stmt in block.statements() {
+//                 analysis.analyze_stmt(stmt);
+//             }
+//         }
+//         Ok(analysis)
+//     }
+// }
 
-                match expr.op {
-                    rustpython_parser::ast::Operator::MatMult => match (left, right) {
-                        (
-                            Variable::Tensor(Shape::Known(axes_left)),
-                            Variable::Tensor(Shape::Known(axes_right)),
-                        ) => {
-                            // check last axis of s1 with first axis of s2
-                            self.axes_matching(
-                                axes_left
-                                    .last()
-                                    .expect("tensor must have at least one axis"),
-                                axes_right
-                                    .first()
-                                    .expect("tensor must have at least one axis"),
-                                span,
-                            )?;
-
-                            if axes_left.len() != 2 || axes_right.len() != 2 {
-                                todo!("handle batched matmul!");
-                            }
-
-                            Ok(Variable::Tensor(Shape::Known(vec![
-                                axes_left.first().unwrap().clone(),
-                                axes_right.last().unwrap().clone(),
-                            ])))
-                        }
-                        _ => Ok(Variable::Tensor(Shape::Unknown)),
-                    },
-                    _ => match (left, right) {
-                        (Variable::NotTensor, Variable::NotTensor) => Ok(Variable::NotTensor),
-                        (Variable::Tensor(_), Variable::Tensor(_)) => {
-                            todo!("handle broadcasting")
-                        }
-                        (Variable::Tensor(s), _) | (_, Variable::Tensor(s)) => {
-                            Ok(Variable::Tensor(s))
-                        }
-                    },
-                }
-            }
-            Expr::Constant(_) => Ok(Variable::NotTensor),
-            Expr::Name(expr_name) => Ok(self.resolve_var(&expr_name.id)),
-
-            _ => todo!("not handled"),
-        }
-    }
-
-    fn analyze_func(&mut self) -> Result<()> {
-        self.parse_args();
-
-        for stmt in self.func.body.clone() {
-            match stmt {
-                rustpython_parser::ast::Stmt::Assign(assign) => {
-                    let id = assign
-                        .targets
-                        .first()
-                        .expect("assign doesn't have a target")
-                        .as_name_expr()
-                        .expect("assuming can only assign to names right now")
-                        .id
-                        .clone();
-
-                    let val = self.handle_expr(*assign.value)?;
-                    self.domain.insert(id, val);
-                }
-
-                _ => todo!("not handled"),
-            }
-        }
-
-        Ok(())
-    }
-}
-
-pub fn analyze(prog: Program) -> Result<()> {
-    for func in prog.functions.iter() {
-        let mut func_analysis = FunctionAnalysis::new(func.clone());
-        func_analysis.analyze_func()?;
-        log::debug!("{}", func_analysis)
-    }
-
-    Ok(())
-}
+// pub fn analyze(prog: Program) -> Result<()> {
+//     for func in prog.functions {
+//         // TODO: maybe do some nice caching later for modularity with user's own funcs
+//         let _ = FunctionAnalysis::analyze_func(&func);
+//     }
+//     Ok(())
+// }

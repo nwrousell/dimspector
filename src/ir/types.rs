@@ -7,10 +7,7 @@ use petgraph::{
 use smallvec::{SmallVec, smallvec};
 use torch_infer2::utils;
 
-use rustpython_parser::{
-    ast::{ExprAttribute, ExprName},
-    text_size::TextRange,
-};
+use rustpython_parser::text_size::TextRange;
 
 use crate::analysis::Variable;
 
@@ -132,6 +129,10 @@ impl BasicBlockIdx {
     fn new(idx: usize) -> Self {
         BasicBlockIdx(idx)
     }
+
+    pub fn index(&self) -> usize {
+        self.0
+    }
 }
 
 impl From<NodeIndex> for BasicBlockIdx {
@@ -159,6 +160,10 @@ impl Path {
             dot_string += s;
         }
         dot_string
+    }
+
+    pub fn parts(&self) -> &[String] {
+        &self.0
     }
 }
 

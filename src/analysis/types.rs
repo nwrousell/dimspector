@@ -1,37 +1,59 @@
 // NOTE: this representation disallows A[..., d] shapes
 
-use std::fmt::Display;
+use std::collections::HashSet;
 
-#[derive(Debug, Clone)]
-pub enum Variable {
-    NotTensor,
-    // AxixLength { axis: u32, root: Identifier, loc: Location }
-    Tensor(Shape),
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub enum DimKind {
+    Named(String),
+    Concrete(u32),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct DimVar {
+    kind: DimKind,
+    // TODO: more info potent around this, related to origin of this dimvar which would be
+    // useful for debugging
+}
+
+impl DimVar {
+    pub fn new(kind: DimKind) -> Self {
+        Self { kind }
+    }
+
+    pub fn kind(&self) -> DimKind {
+        self.kind.clone()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Variable {
+    NonTensor,
+    DimVar(DimVar),
+    Tensor(HashSet<Shape>),
+    Top,
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum Shape {
     Unknown,
-    Known(Vec<Axis>),
+    Known(Vec<DimVar>),
 }
 
 impl Shape {
     pub fn from_str(s: &str) -> Self {
-        let mut axes = Vec::new();
-        for axis in s.split(' ') {
-            if let Ok(n) = axis.parse::<u32>() {
-                axes.push(Axis::Concrete(n));
-            } else if !axis.trim().is_empty() {
-                axes.push(Axis::Named(axis.to_string()));
+        let mut dims = Vec::new();
+        for dim in s.split(' ') {
+            if let Ok(n) = dim.parse::<u32>() {
+                dims.push(DimVar {
+                    kind: DimKind::Concrete(n),
+                });
+            } else if !dim.trim().is_empty() {
+                dims.push(DimVar {
+                    kind: DimKind::Named(dim.to_string()),
+                });
             }
         }
 
-        Self::Known(axes)
+        Self::Known(dims)
     }
-}
-
-#[derive(Debug, Clone)]
-pub enum Axis {
-    Named(String),
-    Concrete(u32),
 }

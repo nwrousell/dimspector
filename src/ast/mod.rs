@@ -1,9 +1,11 @@
-use miette::{NamedSource, Result, miette};
+use miette::NamedSource;
 use rustpython_parser::{self, Mode};
 use std::{
     fs,
     path::{Path, PathBuf},
 };
+
+use anyhow::Result;
 
 mod print;
 mod types;
@@ -36,7 +38,7 @@ impl Input {
 
 /// Read a source file from disk.
 pub fn read(path: &Path) -> Result<Input> {
-    let contents = fs::read_to_string(path).map_err(|e| miette!("{}", e.to_string()))?;
+    let contents = fs::read_to_string(path)?;
     Ok(Input {
         contents,
         path: path.to_path_buf(),
@@ -44,8 +46,7 @@ pub fn read(path: &Path) -> Result<Input> {
 }
 
 pub fn parse(input: &Input) -> Result<Program> {
-    let ast = rustpython_parser::parse(&input.contents, Mode::Module, "simple.py")
-        .map_err(|e| miette!("{}", e))?;
+    let ast = rustpython_parser::parse(&input.contents, Mode::Module, "simple.py")?;
 
     let mut functions = Vec::new();
     if let rustpython_parser::ast::Mod::Module(module) = ast {

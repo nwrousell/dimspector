@@ -1,3 +1,5 @@
+use std::fmt;
+
 use petgraph::visit::{DfsPostOrder, GraphRef, IntoNeighbors, Visitable};
 
 pub fn reverse_post_order<N, G>(g: G, entry: G::NodeId) -> Vec<N>
@@ -13,4 +15,34 @@ where
     }
     postorder.reverse();
     postorder
+}
+
+pub fn write_comma_separated<T: fmt::Display>(
+    f: &mut fmt::Formatter,
+    items: impl IntoIterator<Item = T>,
+) -> fmt::Result {
+    for (i, item) in items.into_iter().enumerate() {
+        if i > 0 {
+            write!(f, ", ")?;
+        }
+        write!(f, "{}", item)?;
+    }
+    Ok(())
+}
+
+pub fn write_newline_separated<T: fmt::Display>(
+    f: &mut fmt::Formatter,
+    items: impl IntoIterator<Item = T>,
+) -> fmt::Result {
+    for (i, item) in items.into_iter().enumerate() {
+        if i > 0 {
+            write!(f, "\n")?;
+        }
+        write!(f, "{}", item)?;
+    }
+    Ok(())
+}
+
+pub fn indent(s: impl AsRef<str>) -> String {
+    textwrap::indent(s.as_ref(), "  ")
 }

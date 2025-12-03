@@ -1,23 +1,43 @@
-use std::fmt::Display;
+use std::fmt;
 
-use crate::analysis::{FunctionAnalysis, types::Axis};
+use torch_infer2::utils::write_comma_separated;
 
-impl Display for FunctionAnalysis {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!("{}:\n", self.func.name))?;
-        for (k, v) in self.domain.iter() {
-            f.write_fmt(format_args!("{k} -> {v:?}\n"))?;
+use super::types::{DimKind, DimVar, Shape, Variable};
+
+impl fmt::Display for DimVar {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.kind() {
+            DimKind::Concrete(c) => f.write_fmt(format_args!("{c}"))?,
+            DimKind::Named(n) => f.write_fmt(format_args!("{n}"))?,
         }
         Ok(())
     }
 }
 
-impl Display for Axis {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for Variable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Axis::Concrete(c) => f.write_fmt(format_args!("{c}"))?,
-            Axis::Named(n) => f.write_fmt(format_args!("{n}"))?,
+            Variable::NonTensor => write!(f, "NonTensor"),
+            Variable::DimVar(dim_var) => write!(f, "{}", dim_var),
+            Variable::Tensor(hash_set) => {
+                write!(f, "{{")?;
+                write_comma_separated(f, hash_set);
+                write!(f, "}}")
+            }
+            Variable::Top => write!(f, "⟙"),
         }
-        Ok(())
+    }
+}
+
+impl fmt::Display for Shape {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Shape::Unknown => write!(f, "Unknown"),
+            Shape::Known(dim_vars) => {
+                write!(f, "[")?;
+                write_comma_separated(f, dim_vars)?;
+                write!(f, "]")
+            }
+        }
     }
 }
