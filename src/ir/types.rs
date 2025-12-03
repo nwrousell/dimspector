@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use petgraph::{
     Direction,
     graph::{DiGraph, NodeIndex},
@@ -5,7 +7,10 @@ use petgraph::{
 use smallvec::{SmallVec, smallvec};
 use torch_infer2::utils;
 
-use rustpython_parser::text_size::TextRange;
+use rustpython_parser::{
+    ast::{ExprAttribute, ExprName},
+    text_size::TextRange,
+};
 
 use crate::analysis::Variable;
 
@@ -13,7 +18,8 @@ pub struct Program {
     pub functions: Vec<Function>,
 }
 
-type Cfg = DiGraph<BasicBlock, ()>;
+pub type Cfg = DiGraph<BasicBlock, ()>;
+pub type PartialCfg = DiGraph<Option<BasicBlock>, ()>;
 
 #[derive(Eq, Hash, PartialEq)]
 pub struct Location {
@@ -22,20 +28,37 @@ pub struct Location {
 }
 
 pub struct Function {
-    // param info
-    // body features
+    pub identifier: Path,
     pub cfg: Cfg,
-    pub params: Vec<(Identifier, Variable)>,
+    pub params: Vec<Parameter>,
     pub rpo: Vec<NodeIndex>,
 }
 
+pub struct Parameter(pub Path, pub Option<Variable>);
+
+impl Parameter {
+    pub fn new(param: Path, annotation: Option<Variable>) -> Self {
+        Self(param, annotation)
+    }
+}
+
 impl Function {
-    pub fn new(cfg: Cfg, params: Vec<(Identifier, Variable)>) -> Function {
+    pub fn new(identifier: Path, cfg: Cfg, params: Vec<(Path, Option<Variable>)>) -> Function {
         let rpo: Vec<NodeIndex> = utils::reverse_post_order(&cfg, 0.into())
             .into_iter()
             .collect();
 
-        Self { cfg, rpo, params }
+        let params = params
+            .into_iter()
+            .map(|(p, a)| Parameter::new(p, a))
+            .collect();
+
+        Self {
+            identifier,
+            cfg,
+            rpo,
+            params,
+        }
     }
 
     pub fn predecessors(&self, loc: Location) -> SmallVec<[Location; 2]> {
@@ -84,7 +107,25 @@ pub enum Terminator {
     Return(Expr),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+impl Terminator {
+    /// Remap the basic blocks inside the terminator, used during CFG construction.
+    pub fn remap(&mut self, map: &HashMap<BasicBlockIdx, BasicBlockIdx>) {
+        match self {
+            Terminator::Jump(block) => *block = map[block],
+            Terminator::CondJump {
+                true_dst,
+                false_dst,
+                ..
+            } => {
+                *true_dst = map[true_dst];
+                *false_dst = map[false_dst];
+            }
+            Terminator::Return(..) => {}
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct BasicBlockIdx(usize);
 
 impl BasicBlockIdx {
@@ -105,25 +146,89 @@ impl From<BasicBlockIdx> for NodeIndex {
     }
 }
 
-pub type Identifier = rustpython_parser::ast::Identifier;
+pub struct Path(Vec<String>);
+
+impl Path {
+    pub fn new(path: &[String]) -> Self {
+        Self(path.into())
+    }
+
+    pub fn to_dot_string(&self) -> String {
+        let mut dot_string = self.0.first().unwrap().clone();
+        for s in self.0.iter().skip(1) {
+            dot_string += s;
+        }
+        dot_string
+    }
+}
 
 pub struct Statement {
     pub value: Expr,
-    pub target: Option<Identifier>,
+    pub target: Option<Path>,
     pub range: TextRange,
 }
 
-pub enum Expr {
+pub struct Expr {
+    pub kind: ExprKind,
+    pub range: TextRange,
+}
+
+impl Expr {
+    pub fn binop(left: Expr, right: Expr, is_matmul: bool, range: TextRange) -> Expr {
+        Expr {
+            kind: ExprKind::Binop {
+                left: Box::new(left),
+                right: Box::new(right),
+                is_matmul,
+            },
+            range,
+        }
+    }
+
+    pub fn call(
+        receiver: Option<Path>,
+        function: Path,
+        pos_args: Vec<Expr>,
+        keyword_args: Vec<(String, Expr)>,
+        range: TextRange,
+    ) -> Expr {
+        Expr {
+            kind: ExprKind::Call {
+                receiver,
+                function,
+                pos_args,
+                keyword_args,
+            },
+            range,
+        }
+    }
+
+    pub fn constant(range: TextRange) -> Expr {
+        Expr {
+            kind: ExprKind::Constant,
+            range,
+        }
+    }
+
+    pub fn path(path: Path, range: TextRange) -> Expr {
+        Expr {
+            kind: ExprKind::Path(path),
+            range,
+        }
+    }
+}
+pub enum ExprKind {
     Binop {
         left: Box<Expr>,
         right: Box<Expr>,
         is_matmul: bool,
     },
     Call {
-        receiver: Option<Identifier>,
-        function: Identifier,
-        args: Vec<Expr>,
+        receiver: Option<Path>,
+        function: Path,
+        pos_args: Vec<Expr>,
+        keyword_args: Vec<(String, Expr)>,
     },
     Constant,
-    Identifier(Identifier),
+    Path(Path),
 }

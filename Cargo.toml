@@ -13,4 +13,5 @@ miette = { version = "7.6.0", features = ["fancy"] }
 petgraph = "0.8.3"
 rustpython-parser = "0.4.0"
 smallvec = "1.15.1"
+textwrap = "0.16.2"
 thiserror = "2.0.17"
