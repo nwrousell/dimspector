@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use crate::{analysis::DimVar, utils};
+use itertools::Either;
 use petgraph::{
     Direction,
     graph::{DiGraph, NodeIndex},
@@ -18,7 +19,7 @@ pub struct Program {
 pub type Cfg = DiGraph<BasicBlock, ()>;
 pub type PartialCfg = DiGraph<Option<BasicBlock>, ()>;
 
-#[derive(Eq, Hash, PartialEq)]
+#[derive(Eq, Hash, PartialEq, Clone, Copy)]
 pub struct Location {
     pub block: BasicBlockIdx,
     pub instr: usize,
@@ -28,7 +29,8 @@ pub struct Function {
     pub identifier: Path,
     pub cfg: Cfg,
     pub params: Vec<Parameter>,
-    pub rpo: Vec<NodeIndex>,
+    pub locations: Vec<Location>,
+    pub rpo: Vec<BasicBlockIdx>,
 }
 
 pub struct Parameter(pub Path, pub Option<Variable>);
@@ -41,8 +43,9 @@ impl Parameter {
 
 impl Function {
     pub fn new(identifier: Path, cfg: Cfg, params: Vec<(Path, Option<Variable>)>) -> Function {
-        let rpo: Vec<NodeIndex> = utils::reverse_post_order(&cfg, 0.into())
+        let rpo: Vec<BasicBlockIdx> = utils::reverse_post_order(&cfg, 0.into())
             .into_iter()
+            .map(BasicBlockIdx::from)
             .collect();
 
         let params = params
@@ -50,20 +53,30 @@ impl Function {
             .map(|(p, a)| Parameter::new(p, a))
             .collect();
 
+        let locations: Vec<_> = rpo
+            .iter()
+            .copied()
+            .flat_map(|block| {
+                let num_instrs = cfg.node_weight(block.into()).unwrap().statements.len() + 1;
+                (0..num_instrs).map(move |instr| Location { block, instr })
+            })
+            .collect();
+
         Self {
             identifier,
             cfg,
+            locations,
             rpo,
             params,
         }
     }
 
-    pub fn predecessors(&self, loc: Location) -> SmallVec<[Location; 2]> {
+    pub fn predecessors(&self, loc: &Location) -> SmallVec<[Location; 2]> {
         if loc.instr == 0 {
             self.cfg
                 .neighbors_directed(loc.block.into(), Direction::Incoming)
                 .map(|block| {
-                    let instr = self.data(block).statements.len();
+                    let instr = self.data(block.into()).statements.len();
                     Location {
                         block: block.into(),
                         instr,
@@ -78,12 +91,16 @@ impl Function {
         }
     }
 
-    pub fn blocks(&self) -> impl DoubleEndedIterator<Item = NodeIndex> {
+    pub fn blocks(&self) -> impl DoubleEndedIterator<Item = BasicBlockIdx> {
         self.rpo.iter().copied()
     }
 
-    pub fn data(&self, idx: NodeIndex) -> &BasicBlock {
-        self.cfg.node_weight(idx).unwrap()
+    pub fn data(&self, idx: BasicBlockIdx) -> &BasicBlock {
+        self.cfg.node_weight(idx.into()).unwrap()
+    }
+
+    pub fn instr(&self, loc: &Location) -> Either<&Statement, &Terminator> {
+        self.data(loc.block).get(loc.instr)
     }
 }
 
@@ -126,6 +143,17 @@ impl Terminator {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct BasicBlockIdx(usize);
 
+impl BasicBlock {
+    pub fn get(&self, i: usize) -> Either<&Statement, &Terminator> {
+        assert!(i <= self.statements.len());
+        if i == self.statements.len() {
+            Either::Right(&self.terminator)
+        } else {
+            Either::Left(&self.statements[i])
+        }
+    }
+}
+
 impl BasicBlockIdx {
     fn new(idx: usize) -> Self {
         BasicBlockIdx(idx)
@@ -148,7 +176,7 @@ impl From<BasicBlockIdx> for NodeIndex {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Hash, Eq, PartialEq)]
 pub struct Path(Vec<String>);
 
 impl Path {
@@ -230,7 +258,7 @@ impl Expr {
 pub enum Constant {
     Bool(bool),
     Str(String),
-    Int(i32),
+    Int(i64),
     Tuple(Vec<Constant>),
     Float(f64),
 }

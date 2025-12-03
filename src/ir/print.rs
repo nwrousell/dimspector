@@ -1,6 +1,6 @@
 use core::fmt;
 
-use crate::ir::types::{Constant, DimRange};
+use crate::ir::types::{Constant, DimRange, Location};
 use crate::utils::{indent, write_comma_separated};
 
 use crate::ir::{
@@ -33,6 +33,12 @@ impl fmt::Display for Function {
         }
 
         Ok(())
+    }
+}
+
+impl fmt::Display for Location {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}[{}]", self.block, self.instr)
     }
 }
 

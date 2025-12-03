@@ -2,153 +2,197 @@ mod errors;
 mod print;
 mod types;
 
-// use std::cmp::max;
-// use std::collections::{HashMap, HashSet};
+use std::cmp::max;
+use std::collections::{HashMap, HashSet};
 
-// use itertools::EitherOrBoth::{Both, Left, Right};
-// use itertools::Itertools;
+use itertools::EitherOrBoth::{Both, Left, Right};
+use itertools::{Either, Itertools};
 pub use types::{DimVar, Shape, Variable};
 
-// use crate::ir::{Expr, Statement};
-// use crate::ir::{Function, Program};
-// use crate::shape_analysis::errors::ShapeError;
-// use crate::shape_analysis::types::{DimKind, DimVar};
-// use miette::Result;
+use crate::analysis::errors::ShapeError;
+use crate::analysis::types::DimKind;
+use crate::ir::types::{Constant, ExprKind, Location};
+use crate::ir::{Expr, Path, Statement, Terminator};
+use crate::ir::{Function, Program};
+use miette::Result;
 
-// type AnalysisDomain = HashMap<Identifier, Variable>;
+type AnalysisDomain = HashMap<Path, HashSet<Variable>>;
 
-// pub struct FunctionAnalysis {
-//     // func: StmtFunctionDef,
-//     // func: Function,
-//     // TODO: currently just using Hash{Set,Map}s, but would beneifit perhaps
-//     // from inenvitably using bitsets, if the speedup is worth it
-//     state: HashMap<Location, Variable>,
-// }
+pub trait JoinSemiLattice: Eq {
+    fn join(&mut self, other: &Self);
+}
 
-// impl FunctionAnalysis {
-//     fn new() -> Self {
-//         Self {
-//             state: HashMap::new(),
-//         }
-//     }
+impl JoinSemiLattice for AnalysisDomain {
+    fn join(&mut self, other: &Self) {
+        for (path, vars) in other.iter() {
+            if let Some(e) = self.get_mut(&path) {
+                e.extend(vars.iter().cloned());
+            } else {
+                self.insert(path.clone(), vars.clone());
+            }
+        }
+    }
+}
 
-//     fn broadcast_resolve(&self, l_shape: &Shape, r_shape: &Shape) -> Result<Shape> {
-//         match (l_shape, r_shape) {
-//             (Shape::Known(l_shape), Shape::Known(r_shape)) => {
-//                 let mut out_shape = Vec::new();
-//                 for pair in l_shape.iter().rev().zip_longest(r_shape.iter().rev()) {
-//                     out_shape.push(match pair {
-//                         Both(l_dim, r_dim) => match (l_dim.kind(), r_dim.kind()) {
-//                             (DimKind::Named(l_sym), DimKind::Named(r_sym)) => {
-//                                 // TODO: should we assert they are the same symbol, or potent add constraint?
-//                                 if l_sym != r_sym {
-//                                     let err = ShapeError::mismatched(l_dim, r_dim);
-//                                     return Err(err.into());
-//                                 }
-//                                 l_dim.clone()
-//                             }
-//                             (DimKind::Named(sym), DimKind::Concrete(n))
-//                             | (DimKind::Concrete(n), DimKind::Named(sym)) => {
-//                                 if n != 1 {
-//                                     let err = ShapeError::mismatched(l_dim, r_dim);
-//                                     return Err(err.into());
-//                                 }
-//                                 DimVar::new(DimKind::Named(sym))
-//                             }
-//                             (DimKind::Concrete(l_n), DimKind::Concrete(r_n)) => {
-//                                 if l_n != r_n && (l_n != 1 && r_n != 1) {
-//                                     let err = ShapeError::mismatched(l_dim, r_dim);
-//                                     return Err(err.into());
-//                                 }
-//                                 DimVar::new(DimKind::Concrete(max(l_n, r_n)))
-//                             }
-//                         },
-//                         Left(v) | Right(v) => v.clone(),
-//                     });
-//                 }
-//                 out_shape.reverse();
-//                 Ok(Shape::Known(out_shape))
-//             }
-//             (_, _) => Ok(Shape::Unknown), // TODO:
-//         }
-//     }
+type GlobalAnalysis = Vec<FunctionAnalysis>;
 
-//     fn eval_expr(&mut self, expr: &Expr) -> Result<Variable> {
-//         // TODO:
-//         // - flows of dimvars out of .shape or .size()
-//         // - reshapes, rearranges
-//         // - pytorch stub representation (in IR)
-//         match expr {
-//             Expr::Binop {
-//                 left,
-//                 right,
-//                 is_matmul,
-//             } => {
-//                 let l_var = self.eval_expr(left)?;
-//                 let r_var = self.eval_expr(right)?;
-//                 match (l_var, r_var) {
-//                     (Variable::Top, _) => Ok(Variable::Top),
-//                     (Variable::Tensor(l_shapes), Variable::Tensor(r_shapes)) => {
-//                         let mut out_shapes = HashSet::new();
-//                         for l_shape in l_shapes.iter() {
-//                             for r_shape in r_shapes.iter() {
-//                                 if *is_matmul {
-//                                     // TODO: maybe this should just resolve to the tensor dot stub
-//                                 } else {
-//                                     let out_shape = self.broadcast_resolve(&l_shape, &r_shape)?;
-//                                     out_shapes.insert(out_shape);
-//                                 }
-//                             }
-//                         }
-//                         Ok(Variable::Tensor(out_shapes))
-//                     }
-//                     (Variable::Tensor(shapes), _) | (_, Variable::Tensor(shapes)) => {
-//                         // other should be some number, will retain tensor operand shape
-//                         Ok(Variable::Tensor(shapes))
-//                     }
-//                     (Variable::DimVar(l_dvar), _) => {
-//                         // hopefully this doesn't happen for now, in the future we want to model symbolic
-//                         // expressions on our symbolic variable dimvars
-//                         Ok(Variable::DimVar(l_dvar))
-//                     }
-//                     (Variable::NonTensor, _) => Ok(Variable::NonTensor),
-//                 }
-//             }
-//             Expr::Call {
-//                 receiver,
-//                 function,
-//                 args,
-//             } => Ok(todo!()),
-//             Expr::Constant => Ok(todo!()),
-//             Expr::Identifier(id) => Ok(todo!()),
-//         }
-//     }
+pub struct FunctionAnalysis {
+    // func: StmtFunctionDef,
+    // func: Function,
+    // TODO: currently just using Hash{Set,Map}s, but would beneifit perhaps
+    // from inenvitably using bitsets, if the speedup is worth it
+    pub id: Path,
+    pub state: HashMap<Location, AnalysisDomain>,
+}
 
-//     fn analyze_stmt(&mut self, stmt: &Statement) -> Result<()> {
-//         let res_var = self.eval_expr(&stmt.value);
-//         if let Some(id) = &stmt.target {
-//             self.domain.insert(id);
-//         }
-//         Ok(())
-//     }
+impl FunctionAnalysis {
+    fn new(id: &Path) -> Self {
+        Self {
+            id: id.clone(),
+            state: HashMap::new(),
+        }
+    }
 
-//     fn analyze_func(func: &Function) -> Result<FunctionAnalysis> {
-//         let mut analysis = Self::new();
-//         let blocks: Vec<_> = func.blocks().collect();
-//         for block in blocks {
-//             let block = func.data(block);
-//             for stmt in block.statements() {
-//                 analysis.analyze_stmt(stmt);
-//             }
-//         }
-//         Ok(analysis)
-//     }
-// }
+    fn broadcast_resolve(&self, l_shape: &Shape, r_shape: &Shape) -> Result<Shape> {
+        match (l_shape, r_shape) {
+            (Shape::Known(l_shape), Shape::Known(r_shape)) => {
+                let mut out_shape = Vec::new();
+                for pair in l_shape.iter().rev().zip_longest(r_shape.iter().rev()) {
+                    out_shape.push(match pair {
+                        Both(l_dim, r_dim) => match (l_dim.kind(), r_dim.kind()) {
+                            (DimKind::Named(l_sym), DimKind::Named(r_sym)) => {
+                                // TODO: should we assert they are the same symbol, or potent add constraint?
+                                if l_sym != r_sym {
+                                    let err = ShapeError::mismatched(l_dim, r_dim);
+                                    return Err(err.into());
+                                }
+                                l_dim.clone()
+                            }
+                            (DimKind::Named(sym), DimKind::Concrete(n))
+                            | (DimKind::Concrete(n), DimKind::Named(sym)) => {
+                                if n != 1 {
+                                    let err = ShapeError::mismatched(l_dim, r_dim);
+                                    return Err(err.into());
+                                }
+                                DimVar::new(DimKind::Named(sym))
+                            }
+                            (DimKind::Concrete(l_n), DimKind::Concrete(r_n)) => {
+                                if l_n != r_n && (l_n != 1 && r_n != 1) {
+                                    let err = ShapeError::mismatched(l_dim, r_dim);
+                                    return Err(err.into());
+                                }
+                                DimVar::new(DimKind::Concrete(max(l_n, r_n)))
+                            }
+                        },
+                        Left(v) | Right(v) => v.clone(),
+                    });
+                }
+                out_shape.reverse();
+                Ok(Shape::Known(out_shape))
+            }
+            (_, _) => Ok(Shape::Unknown), // TODO:
+        }
+    }
 
-// pub fn analyze(prog: Program) -> Result<()> {
-//     for func in prog.functions {
-//         // TODO: maybe do some nice caching later for modularity with user's own funcs
-//         let _ = FunctionAnalysis::analyze_func(&func);
-//     }
-//     Ok(())
-// }
+    fn eval_expr(&mut self, domain: &AnalysisDomain, expr: &Expr) -> Result<HashSet<Variable>> {
+        // TODO:
+        // - flows of dimvars out of .shape or .size()
+        // - reshapes, rearranges
+        // - pytorch stub representation (in IR)
+        match &expr.kind {
+            ExprKind::Binop {
+                left,
+                right,
+                is_matmul,
+            } => {
+                let l_vars = self.eval_expr(domain, left)?;
+                let r_vars = self.eval_expr(domain, right)?;
+                let mut out_vars = HashSet::new();
+                for l_var in l_vars.iter() {
+                    for r_var in r_vars.iter() {
+                        match (l_var, r_var) {
+                            (Variable::Top, _) | (_, Variable::Top) => {
+                                out_vars.insert(Variable::Top);
+                            }
+                            (Variable::Tensor(l_shape), Variable::Tensor(r_shape)) => {
+                                if *is_matmul {
+                                    // TODO: maybe this should just resolve to the tensor dot stub
+                                    todo!()
+                                } else {
+                                    let out_shape = self.broadcast_resolve(&l_shape, &r_shape)?;
+                                    out_vars.insert(Variable::Tensor(out_shape));
+                                }
+                            }
+                            (Variable::Tensor(shape), _) | (_, Variable::Tensor(shape)) => {
+                                // other should be some number, will retain tensor operand shape
+                                out_vars.insert(Variable::Tensor(shape.clone()));
+                            }
+                            (Variable::DimVar(l_dvar), Variable::DimVar(r_dvar)) => {
+                                // TODO: in the future, we want to get some symbolic expr out of this
+                                todo!()
+                            }
+                        }
+                    }
+                }
+                Ok(out_vars)
+            }
+            ExprKind::Call {
+                receiver,
+                function,
+                pos_args,
+                keyword_args,
+            } => {
+                todo!()
+            }
+            ExprKind::Constant(c) => match c {
+                Constant::Int(i) => {
+                    Ok(HashSet::from_iter(vec![Variable::DimVar(DimVar::from(*i))]))
+                }
+                _ => Ok(HashSet::from_iter(vec![Variable::Top])),
+            },
+            ExprKind::Path(p) => Ok(domain
+                .get(p)
+                .unwrap_or(&HashSet::from_iter(vec![Variable::Top]))
+                .clone()),
+            ExprKind::Slice { receiver, slice } => todo!(),
+        }
+    }
+
+    fn handle_stmt(&mut self, domain: &mut AnalysisDomain, stmt: &Statement) -> Result<()> {
+        let res_var = self.eval_expr(domain, &stmt.value)?;
+        if let Some(path) = &stmt.target {
+            domain.insert(path.clone(), res_var); // TODO: intern
+        }
+        Ok(())
+    }
+
+    fn handle_term(&mut self, domain: &mut AnalysisDomain, term: &Terminator) -> Result<()> {
+        Ok(())
+    }
+
+    fn analyze_func(&mut self, func: &Function) -> Result<()> {
+        for loc in func.locations.iter() {
+            let mut domain = AnalysisDomain::new();
+            for pred_loc in func.predecessors(&loc) {
+                domain.join(self.state.entry(pred_loc).or_insert(AnalysisDomain::new()));
+            }
+            match func.instr(&loc) {
+                Either::Left(stmt) => self.handle_stmt(&mut domain, stmt),
+                Either::Right(term) => self.handle_term(&mut domain, term),
+            };
+            self.state.insert(*loc, domain);
+        }
+        Ok(())
+    }
+}
+
+pub fn analyze(prog: Program) -> Result<GlobalAnalysis> {
+    let mut global_analysis = GlobalAnalysis::new();
+    for func in prog.functions {
+        // TODO: maybe do some nice caching later for modularity with user's own funcs
+        let mut analysis = FunctionAnalysis::new(&func.identifier);
+        analysis.analyze_func(&func)?;
+        global_analysis.push(analysis);
+    }
+    Ok(global_analysis)
+}

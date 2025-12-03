@@ -5,7 +5,8 @@ use std::collections::HashSet;
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum DimKind {
     Named(String),
-    Concrete(u32),
+    Concrete(i64),
+    // TODO: DimExpr: expr between dimvars
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -25,12 +26,19 @@ impl DimVar {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl From<i64> for DimVar {
+    fn from(value: i64) -> Self {
+        Self {
+            kind: DimKind::Concrete(value),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum Variable {
-    NonTensor,
-    DimVar(DimVar),
-    Tensor(HashSet<Shape>),
     Top,
+    DimVar(DimVar),
+    Tensor(Shape),
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -43,7 +51,7 @@ impl Shape {
     pub fn from_str(s: &str) -> Self {
         let mut dims = Vec::new();
         for dim in s.split(' ') {
-            if let Ok(n) = dim.parse::<u32>() {
+            if let Ok(n) = dim.parse::<i64>() {
                 dims.push(DimVar {
                     kind: DimKind::Concrete(n),
                 });

@@ -1,4 +1,5 @@
 use clap::Parser;
+use torch_infer2::analysis::analyze;
 // use miette::{MietteHandlerOpts, Result};
 use std::path::PathBuf;
 
@@ -36,7 +37,8 @@ fn run(file: PathBuf) -> Result<()> {
     let ir = torch_infer2::ir::lower(program)?;
     log::debug!("IR:\n{}", ir);
 
-    // analyze(ir)?;
+    let res = analyze(ir)?;
+    log::debug!("Analysis:\n{}", res);
 
     Ok(())
 }

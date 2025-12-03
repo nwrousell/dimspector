@@ -1,6 +1,9 @@
-use std::fmt;
+use std::{collections::HashMap, fmt};
 
-use crate::utils::write_comma_separated;
+use crate::{
+    analysis::{AnalysisDomain, FunctionAnalysis},
+    utils::write_comma_separated,
+};
 
 use super::types::{DimKind, DimVar, Shape, Variable};
 
@@ -17,13 +20,9 @@ impl fmt::Display for DimVar {
 impl fmt::Display for Variable {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Variable::NonTensor => write!(f, "NonTensor"),
+            Variable::Top => write!(f, "NonTensor"),
             Variable::DimVar(dim_var) => write!(f, "{}", dim_var),
-            Variable::Tensor(hash_set) => {
-                write!(f, "{{")?;
-                write_comma_separated(f, hash_set)?;
-                write!(f, "}}")
-            }
+            Variable::Tensor(shape) => write!(f, "{}", shape),
             Variable::Top => write!(f, "⟙"),
         }
     }
@@ -39,5 +38,19 @@ impl fmt::Display for Shape {
                 write!(f, "]")
             }
         }
+    }
+}
+impl fmt::Display for FunctionAnalysis {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Function {}", self.id);
+        for (loc, domain) in self.state.iter() {
+            write!(f, "  {}", loc)?;
+            for (path, vars) in domain.iter() {
+                write!(f, "    {} => {{", path)?;
+                write_comma_separated(f, vars)?;
+                write!(f, "}}\n")?
+            }
+        }
+        Ok(())
     }
 }

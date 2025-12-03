@@ -1,6 +1,6 @@
 mod lower;
 mod print;
-mod types;
+pub mod types;
 
 use anyhow::Result;
 

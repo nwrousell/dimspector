@@ -87,16 +87,14 @@ impl LowerBody {
         // populate params
         for arg in func.args.args.clone() {
             let identifier = arg.def.arg;
-            let mut ty = Variable::NonTensor;
+            let mut ty = Variable::Top;
             if let Some(annotation) = arg.def.annotation {
                 if let ASTExpr::Subscript(subscript) = *annotation {
                     if let ASTExpr::Name(name) = *subscript.value {
                         if name.id.as_str() == "T" {
                             if let ASTExpr::Constant(shape_str) = *subscript.slice {
                                 let shape_str = shape_str.value.expect_str();
-                                let mut shapes = HashSet::new();
-                                shapes.insert(Shape::from_str(&shape_str));
-                                ty = Variable::Tensor(shapes);
+                                ty = Variable::Tensor(Shape::from_str(&shape_str));
                             }
                         }
                     }
