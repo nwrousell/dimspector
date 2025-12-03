@@ -1,0 +1,36 @@
+---
+source: tests/snapshots.rs
+assertion_line: 39
+expression: output
+---
+def empty():
+  bb0:
+    return
+
+def single():
+  bb0:
+    ? + ?
+    return
+
+def single_return():
+  bb0:
+    return ? + ?
+
+def params(a: {[a, b]}, b: {[b, c]}):
+  bb0:
+    return a @ b
+
+def if_else_join(a: NonTensor):
+  bb0:
+    if a: jump bb1 else jump bb2  bb2:
+    b = ?
+    jump bb3  bb1:
+    b = ?
+    jump bb3  bb3:
+    return b
+
+def if_else_no_join(a: NonTensor):
+  bb0:
+    if a: jump bb1 else jump bb2  bb2:
+    return ? + ?  bb1:
+    return ? + ?

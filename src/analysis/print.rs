@@ -1,6 +1,6 @@
 use std::fmt;
 
-use torch_infer2::utils::write_comma_separated;
+use crate::utils::write_comma_separated;
 
 use super::types::{DimKind, DimVar, Shape, Variable};
 
@@ -21,7 +21,7 @@ impl fmt::Display for Variable {
             Variable::DimVar(dim_var) => write!(f, "{}", dim_var),
             Variable::Tensor(hash_set) => {
                 write!(f, "{{")?;
-                write_comma_separated(f, hash_set);
+                write_comma_separated(f, hash_set)?;
                 write!(f, "}}")
             }
             Variable::Top => write!(f, "⟙"),

@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 
+use crate::utils;
 use petgraph::{
     Direction,
     graph::{DiGraph, NodeIndex},
 };
 use smallvec::{SmallVec, smallvec};
-use torch_infer2::utils;
 
 use rustpython_parser::text_size::TextRange;
 
@@ -94,6 +94,7 @@ pub struct BasicBlock {
     pub terminator: Terminator,
 }
 
+#[derive(Clone)]
 pub enum Terminator {
     Jump(BasicBlockIdx),
     CondJump {
@@ -101,7 +102,7 @@ pub enum Terminator {
         true_dst: BasicBlockIdx,
         false_dst: BasicBlockIdx,
     },
-    Return(Expr),
+    Return(Option<Expr>),
 }
 
 impl Terminator {
@@ -147,6 +148,7 @@ impl From<BasicBlockIdx> for NodeIndex {
     }
 }
 
+#[derive(Clone)]
 pub struct Path(Vec<String>);
 
 impl Path {
@@ -173,6 +175,7 @@ pub struct Statement {
     pub range: TextRange,
 }
 
+#[derive(Clone)]
 pub struct Expr {
     pub kind: ExprKind,
     pub range: TextRange,
@@ -222,6 +225,8 @@ impl Expr {
         }
     }
 }
+
+#[derive(Clone)]
 pub enum ExprKind {
     Binop {
         left: Box<Expr>,

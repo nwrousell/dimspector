@@ -9,7 +9,7 @@ use rustpython_parser::{
     ast::{
         Expr as ASTExpr, ExprAttribute, ExprBinOp, ExprCall, ExprConstant, ExprName, ExprSlice,
         ExprSubscript, ExprTuple, ExprUnaryOp, Keyword, Stmt as ASTStmt, StmtAssign, StmtAugAssign,
-        StmtExpr, StmtFunctionDef as ASTFunction, StmtIf,
+        StmtExpr, StmtFunctionDef as ASTFunction, StmtIf, StmtReturn,
     },
     text_size::TextRange,
 };
@@ -23,7 +23,7 @@ use crate::{
 pub fn lower_func(func: ASTFunction) -> Result<Function> {
     let mut lowerer = LowerBody::new(func.clone());
 
-    lowerer.lower_body(func.body)?;
+    lowerer.lower_func_body(func.body)?;
 
     // Find all basic blocks reachable from the start.
     let reachable = Dfs::new(&lowerer.graph, lowerer.start_block.into())
@@ -69,7 +69,7 @@ struct LowerBody {
     pub params: Vec<(Path, Option<Variable>)>,
     pub graph: PartialCfg, // might need to turn this into DiGraph<Option<BasicBlock>, ()>
     pub cur_block: Vec<Statement>,
-    pub cur_loc: BasicBlockIdx,
+    pub cur_loc: Option<BasicBlockIdx>,
     pub start_block: BasicBlockIdx,
 
     /// used to distinguish between method calls + function calls
@@ -111,10 +111,21 @@ impl LowerBody {
             params,
             graph,
             cur_block: Vec::new(),
-            cur_loc: start_block,
+            cur_loc: Some(start_block),
             start_block,
             known_paths,
         }
+    }
+
+    fn lower_func_body(&mut self, body: Vec<ASTStmt>) -> Result<()> {
+        self.lower_body(body)?;
+
+        // functions implicitly return None
+        if let Some(_) = self.cur_loc {
+            self.finish_block(None, Terminator::Return(None));
+        }
+
+        Ok(())
     }
 
     fn lower_body(&mut self, body: Vec<ASTStmt>) -> Result<()> {
@@ -124,30 +135,38 @@ impl LowerBody {
         Ok(())
     }
 
-    fn finish_block(&mut self, new_block: BasicBlockIdx, terminator: Terminator) {
-        let statements = self.cur_block.drain(..).collect::<Vec<_>>();
-        let cur_block = BasicBlock {
-            statements,
-            terminator,
-        };
-        match cur_block.terminator {
-            Terminator::Jump(dst) => {
-                self.graph.add_edge(self.cur_loc.into(), dst.into(), ());
+    fn new_block(&mut self) -> BasicBlockIdx {
+        self.graph.add_node(None).into()
+    }
+
+    fn finish_block(&mut self, new_block: Option<BasicBlockIdx>, terminator: Terminator) {
+        if let Some(cur_loc_inner) = self.cur_loc {
+            let statements = self.cur_block.drain(..).collect::<Vec<_>>();
+            let cur_block = BasicBlock {
+                statements,
+                terminator,
+            };
+            match cur_block.terminator {
+                Terminator::Jump(dst) => {
+                    self.graph.add_edge(cur_loc_inner.into(), dst.into(), ());
+                }
+                Terminator::CondJump {
+                    true_dst,
+                    false_dst,
+                    ..
+                } => {
+                    self.graph
+                        .add_edge(cur_loc_inner.into(), true_dst.into(), ());
+                    self.graph
+                        .add_edge(cur_loc_inner.into(), false_dst.into(), ());
+                }
+                Terminator::Return(_) => {}
             }
-            Terminator::CondJump {
-                true_dst,
-                false_dst,
-                ..
-            } => {
-                self.graph
-                    .add_edge(self.cur_loc.into(), true_dst.into(), ());
-                self.graph
-                    .add_edge(self.cur_loc.into(), false_dst.into(), ());
-            }
-            Terminator::Return(_) => {}
+            *self.graph.node_weight_mut(cur_loc_inner.into()).unwrap() = Some(cur_block);
+            self.cur_loc = new_block;
+        } else {
+            unreachable!("finish_block was called with a None cur_loc")
         }
-        *self.graph.node_weight_mut(self.cur_loc.into()).unwrap() = Some(cur_block);
-        self.cur_loc = new_block;
     }
 
     fn add_statement(&mut self, value: Expr, target: Option<Path>, range: TextRange) {
@@ -213,10 +232,37 @@ impl LowerBody {
                 body, orelse, test, ..
             }) => {
                 // make then and else blocks
+                let then_block = self.new_block();
+                let else_block = self.new_block();
+                let join_block = self.new_block();
 
                 // cond jump from current to then/else
+                let cond = self.lower_expr_to_expr(*test)?;
+                let jmp = Terminator::CondJump {
+                    cond,
+                    true_dst: then_block,
+                    false_dst: else_block,
+                };
+                self.finish_block(Some(then_block), jmp);
 
-                // have both jump to fresh block
+                // lower then body
+                let jmp = Terminator::Jump(join_block);
+                self.lower_body(body)?;
+                match self.cur_loc {
+                    Some(cur_loc) => {
+                        self.finish_block(Some(else_block), jmp.clone());
+                    }
+                    None => self.cur_loc = Some(else_block),
+                };
+
+                // lower else body
+                self.lower_body(orelse)?;
+                match self.cur_loc {
+                    Some(cur_loc) => {
+                        self.finish_block(Some(join_block), jmp);
+                    }
+                    None => self.cur_loc = Some(join_block),
+                };
             }
             ASTStmt::For(stmt_for) => todo!(),
 
@@ -227,11 +273,18 @@ impl LowerBody {
                 value,
             }) => todo!(),
             ASTStmt::AnnAssign(stmt_ann_assign) => todo!(),
+            ASTStmt::Return(StmtReturn { value, .. }) => {
+                let value = match value {
+                    None => None,
+                    Some(expr) => Some(self.lower_expr_to_expr(*expr)?),
+                };
+                let ret = Terminator::Return(value);
+                self.finish_block(None, ret);
+            }
 
             ASTStmt::Delete(stmt_delete) => todo!(),
             ASTStmt::Assert(stmt_assert) => todo!(),
             ASTStmt::Raise(stmt_raise) => todo!(),
-            ASTStmt::Return(stmt_return) => todo!(),
 
             ASTStmt::AsyncFor(stmt_async_for) => todo!(),
 

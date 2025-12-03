@@ -4,12 +4,6 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 
-use crate::ast::Input;
-
-mod analysis;
-mod ast;
-mod ir;
-
 #[derive(Parser, Debug)]
 struct Args {
     /// Path of the file to check
@@ -30,16 +24,16 @@ fn main() -> Result<()> {
 
     let args = Args::parse();
 
-    let input = ast::read(&args.file)?;
-
-    run(&args, &input)
+    run(args.file)
 }
 
-fn run(_args: &Args, input: &Input) -> Result<()> {
-    let program = ast::parse(input)?;
+fn run(file: PathBuf) -> Result<()> {
+    let input = torch_infer2::ast::read(&file)?;
+
+    let program = torch_infer2::ast::parse(&input)?;
     log::debug!("AST:\n{}", program);
 
-    let ir = ir::lower(program)?;
+    let ir = torch_infer2::ir::lower(program)?;
     log::debug!("IR:\n{}", ir);
 
     // analyze(ir)?;

@@ -1,6 +1,6 @@
 use core::fmt;
 
-use torch_infer2::utils::{indent, write_comma_separated};
+use crate::utils::{indent, write_comma_separated};
 
 use crate::ir::{
     Function, Program,
@@ -26,9 +26,9 @@ impl fmt::Display for Function {
         for idx in self.blocks() {
             let block_idx = BasicBlockIdx::from(idx);
             let block = self.data(idx);
-            write!(f, "{}:\n", block_idx)?;
+            write!(f, "  {}:\n", block_idx)?;
             let block_content = format!("{}", block);
-            write!(f, "{}", indent(&block_content))?;
+            write!(f, "{}", indent(indent(&block_content)))?;
         }
 
         Ok(())
@@ -53,7 +53,7 @@ impl fmt::Display for BasicBlock {
         }
 
         // Print terminator
-        write!(f, "{}", self.terminator)?;
+        write!(f, "{}\n", self.terminator)?;
 
         Ok(())
     }
@@ -127,9 +127,10 @@ impl fmt::Display for BasicBlockIdx {
 impl fmt::Display for Terminator {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Terminator::Return(expr) => {
-                write!(f, "return {}", expr)
-            }
+            Terminator::Return(expr) => match expr {
+                Some(expr) => write!(f, "return {}", expr),
+                None => write!(f, "return"),
+            },
             Terminator::Jump(dst) => {
                 write!(f, "jump bb{}", dst.index())
             }
@@ -140,9 +141,9 @@ impl fmt::Display for Terminator {
             } => {
                 write!(
                     f,
-                    "if {}: jump bb{} else jump bb{}",
-                    cond,
+                    "jmp bb{} if {} else bb{}",
                     true_dst.index(),
+                    cond,
                     false_dst.index()
                 )
             }
