@@ -11,11 +11,10 @@ pub use types::{DimVar, Shape, Variable};
 
 use crate::analysis::errors::ShapeError;
 use crate::analysis::types::DimKind;
-use crate::ir::types::{Constant, ExprKind, Location};
-use crate::ir::{Expr, Path, Statement, Terminator};
+use crate::ir::types::{Binop, Constant, ExprKind, Location};
+use crate::ir::{Expr, Parameter, Path, Statement, Terminator};
 use crate::ir::{Function, Program};
-use miette::Result;
-
+use anyhow::Result;
 type AnalysisDomain = HashMap<Path, HashSet<Variable>>;
 
 pub trait JoinSemiLattice: Eq {
@@ -34,7 +33,25 @@ impl JoinSemiLattice for AnalysisDomain {
     }
 }
 
-type GlobalAnalysis = Vec<FunctionAnalysis>;
+pub struct GlobalAnalysis {
+    functions: HashMap<Path, FunctionAnalysis>,
+}
+
+impl GlobalAnalysis {
+    pub fn new() -> Self {
+        Self {
+            functions: HashMap::new(),
+        }
+    }
+
+    pub fn analyze_func(&mut self, func: &Function) -> Result<()> {
+        let name = func.identifier.clone();
+        let mut func_analysis = FunctionAnalysis::new(func);
+        func_analysis.analyze_func(func)?;
+        self.functions.insert(name, func_analysis);
+        Ok(())
+    }
+}
 
 pub struct FunctionAnalysis {
     // func: StmtFunctionDef,
@@ -46,10 +63,22 @@ pub struct FunctionAnalysis {
 }
 
 impl FunctionAnalysis {
-    fn new(id: &Path) -> Self {
+    fn new(func: &Function) -> Self {
+        // populate state with initial params
+        let mut state = HashMap::new();
+
+        let mut start_domain = AnalysisDomain::new();
+
+        for Parameter(path, var) in &func.params {
+            if let Some(var) = var {
+                start_domain.insert(path.clone(), HashSet::from([var.clone()]));
+            }
+        }
+        state.insert(Location::START, start_domain);
+
         Self {
-            id: id.clone(),
-            state: HashMap::new(),
+            id: func.identifier.clone(),
+            state,
         }
     }
 
@@ -100,14 +129,11 @@ impl FunctionAnalysis {
         // - reshapes, rearranges
         // - pytorch stub representation (in IR)
         match &expr.kind {
-            ExprKind::Binop {
-                left,
-                right,
-                is_matmul,
-            } => {
+            ExprKind::Binop { left, right, op } => {
                 let l_vars = self.eval_expr(domain, left)?;
                 let r_vars = self.eval_expr(domain, right)?;
                 let mut out_vars = HashSet::new();
+                let is_matmul = matches!(op, Binop::MatMult);
                 for l_var in l_vars.iter() {
                     for r_var in r_vars.iter() {
                         match (l_var, r_var) {
@@ -115,7 +141,7 @@ impl FunctionAnalysis {
                                 out_vars.insert(Variable::Top);
                             }
                             (Variable::Tensor(l_shape), Variable::Tensor(r_shape)) => {
-                                if *is_matmul {
+                                if is_matmul {
                                     // TODO: maybe this should just resolve to the tensor dot stub
                                     todo!()
                                 } else {
@@ -173,13 +199,18 @@ impl FunctionAnalysis {
     fn analyze_func(&mut self, func: &Function) -> Result<()> {
         for loc in func.locations.iter() {
             let mut domain = AnalysisDomain::new();
-            for pred_loc in func.predecessors(&loc) {
-                domain.join(self.state.entry(pred_loc).or_insert(AnalysisDomain::new()));
+            let preds = func.predecessors(&loc);
+            if preds.len() == 0 {
+                domain = self.state.get(&Location::START).unwrap().clone();
+            } else {
+                for pred_loc in preds {
+                    domain.join(self.state.entry(pred_loc).or_insert(AnalysisDomain::new()));
+                }
             }
             match func.instr(&loc) {
                 Either::Left(stmt) => self.handle_stmt(&mut domain, stmt),
                 Either::Right(term) => self.handle_term(&mut domain, term),
-            };
+            }?;
             self.state.insert(*loc, domain);
         }
         Ok(())
@@ -190,9 +221,7 @@ pub fn analyze(prog: Program) -> Result<GlobalAnalysis> {
     let mut global_analysis = GlobalAnalysis::new();
     for func in prog.functions {
         // TODO: maybe do some nice caching later for modularity with user's own funcs
-        let mut analysis = FunctionAnalysis::new(&func.identifier);
-        analysis.analyze_func(&func)?;
-        global_analysis.push(analysis);
+        global_analysis.analyze_func(&func)?;
     }
     Ok(global_analysis)
 }

@@ -30,6 +30,13 @@ pub struct Location {
     pub instr: usize,
 }
 
+impl Location {
+    pub const START: Location = Location {
+        block: BasicBlockIdx(0),
+        instr: 0,
+    };
+}
+
 pub struct Function {
     pub identifier: Path,
     pub cfg: Cfg,

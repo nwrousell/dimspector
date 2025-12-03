@@ -1,7 +1,7 @@
 use std::{collections::HashMap, fmt};
 
 use crate::{
-    analysis::{AnalysisDomain, FunctionAnalysis},
+    analysis::{AnalysisDomain, FunctionAnalysis, GlobalAnalysis},
     utils::write_comma_separated,
 };
 
@@ -42,14 +42,23 @@ impl fmt::Display for Shape {
 }
 impl fmt::Display for FunctionAnalysis {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Function {}", self.id);
+        write!(f, "Function {}\n", self.id)?;
         for (loc, domain) in self.state.iter() {
-            write!(f, "  {}", loc)?;
+            write!(f, "  {}\n", loc)?;
             for (path, vars) in domain.iter() {
                 write!(f, "    {} => {{", path)?;
                 write_comma_separated(f, vars)?;
                 write!(f, "}}\n")?
             }
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Display for GlobalAnalysis {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (_, func) in self.functions.iter() {
+            write!(f, "{}\n\n", func)?;
         }
         Ok(())
     }
