@@ -34,3 +34,8 @@ def if_else_no_join(a):
         return 1 + 2
     else:
         return 1 - 2
+
+
+def method_vs_func(a):
+    torch.ones(1, 2)
+    a.reshape(-1)

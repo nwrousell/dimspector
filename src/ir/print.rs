@@ -1,5 +1,6 @@
 use core::fmt;
 
+use crate::ir::types::{Constant, DimRange};
 use crate::utils::{indent, write_comma_separated};
 
 use crate::ir::{
@@ -63,7 +64,12 @@ impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.kind {
             ExprKind::Path(path) => write!(f, "{}", path),
-            ExprKind::Constant => write!(f, "?"), // Placeholder for constants
+            ExprKind::Constant(constant) => write!(f, "{}", constant), // Placeholder for constants
+            ExprKind::Slice { receiver, slice } => {
+                write!(f, "{}[", receiver)?;
+                write_comma_separated(f, slice)?;
+                write!(f, "]")
+            }
             ExprKind::Binop {
                 left,
                 right,
@@ -103,6 +109,40 @@ impl fmt::Display for Expr {
 
                 write!(f, ")")
             }
+        }
+    }
+}
+
+impl fmt::Display for DimRange {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DimRange::DimVar(dim_var) => write!(f, "{}", dim_var),
+            DimRange::Range { left, right } => {
+                if let Some(left) = left {
+                    write!(f, "{}", left)?;
+                }
+                write!(f, ":")?;
+                if let Some(right) = right {
+                    write!(f, "{}", right)?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+impl fmt::Display for Constant {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Constant::Bool(b) => write!(f, "{}", b),
+            Constant::Str(s) => write!(f, "'{}'", s),
+            Constant::Int(i) => write!(f, "{}", i),
+            Constant::Tuple(constants) => {
+                write!(f, "(")?;
+                write_comma_separated(f, constants)?;
+                write!(f, ")")
+            }
+            Constant::Float(float) => write!(f, "{}", float),
         }
     }
 }

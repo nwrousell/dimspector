@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::utils;
+use crate::{analysis::DimVar, utils};
 use petgraph::{
     Direction,
     graph::{DiGraph, NodeIndex},
@@ -211,9 +211,9 @@ impl Expr {
         }
     }
 
-    pub fn constant(range: TextRange) -> Expr {
+    pub fn constant(range: TextRange, constant: Constant) -> Expr {
         Expr {
-            kind: ExprKind::Constant,
+            kind: ExprKind::Constant(constant),
             range,
         }
     }
@@ -224,6 +224,15 @@ impl Expr {
             range,
         }
     }
+}
+
+#[derive(Clone)]
+pub enum Constant {
+    Bool(bool),
+    Str(String),
+    Int(i32),
+    Tuple(Vec<Constant>),
+    Float(f64),
 }
 
 #[derive(Clone)]
@@ -239,6 +248,19 @@ pub enum ExprKind {
         pos_args: Vec<Expr>,
         keyword_args: Vec<(String, Expr)>,
     },
-    Constant,
+    Constant(Constant),
     Path(Path),
+    Slice {
+        receiver: Path,
+        slice: Vec<DimRange>,
+    },
+}
+
+#[derive(Clone)]
+pub enum DimRange {
+    DimVar(DimVar),
+    Range {
+        left: Option<DimVar>,
+        right: Option<DimVar>,
+    },
 }

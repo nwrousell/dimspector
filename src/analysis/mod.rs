@@ -7,7 +7,7 @@ mod types;
 
 // use itertools::EitherOrBoth::{Both, Left, Right};
 // use itertools::Itertools;
-pub use types::{Shape, Variable};
+pub use types::{DimVar, Shape, Variable};
 
 // use crate::ir::{Expr, Statement};
 // use crate::ir::{Function, Program};
