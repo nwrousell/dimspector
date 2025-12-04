@@ -23,5 +23,5 @@ def matmul_explicit(a: T["a b"], b: T["b c"]) -> T["a c"]:
 
 def f():
     x = torch.ones(( 5, 10)) # => Shape( 5, 10)
-    y = torch.ones((15, 20)) # => Shape(20, 15)
-    z = matmul(x, y)         # => deduced as bad because matmul expects b <=> c ==> 10 <=> 20 (?)
+    y = torch.ones((15, 20)) # => Shape(15, 20)
+    z = matmul(x, y)         # => deduced as bad because matmul expects b <=> c ==> 10 <=> 15 (?)
