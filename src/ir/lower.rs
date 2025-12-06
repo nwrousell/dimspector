@@ -16,7 +16,10 @@ use rustpython_parser::{
     text_size::TextRange,
 };
 
-use crate::ir::types::{Binop, Constant, Function};
+use crate::{
+    analysis::DimVar,
+    ir::types::{Binop, Constant, Function},
+};
 use crate::{
     analysis::{Shape, Variable},
     ir::types::{BasicBlock, BasicBlockIdx, Cfg, Expr, PartialCfg, Path, Statement, Terminator},
@@ -87,10 +90,16 @@ impl LowerBody {
         let mut known_paths = HashSet::new();
 
         // populate params
-        for arg in func.args.args.clone() {
-            let identifier = arg.def.arg;
-            let mut ty = Variable::Top;
-            if let Some(annotation) = arg.def.annotation {
+        for (i, arg) in func.args.args.clone().iter().enumerate() {
+            let identifier = &arg.def.arg;
+
+            // TODO: have new Variable type so that not every non-tensor-annotated param is a DimVar
+            let mut ty = Variable::DimVar(DimVar::new(crate::analysis::DimKind::Named(format!(
+                "s{}",
+                i
+            ))));
+
+            if let Some(annotation) = arg.def.annotation.clone() {
                 if let ASTExpr::Subscript(subscript) = *annotation {
                     if let ASTExpr::Name(name) = *subscript.value {
                         if name.id.as_str() == "T" {

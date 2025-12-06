@@ -5,19 +5,22 @@ mod types;
 
 use std::cmp::max;
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use itertools::EitherOrBoth::{Both, Left, Right};
 use itertools::{Either, Itertools};
-pub use types::{DimVar, Shape, Variable};
+pub use types::{DimKind, DimVar, Shape, Variable};
 
 use crate::analysis::errors::ShapeError;
 use crate::analysis::models::ModelContext;
-use crate::analysis::types::DimKind;
 use crate::ir::types::{Binop, Constant, ExprKind, Location};
 use crate::ir::{Expr, Parameter, Path, Statement, Terminator};
 use crate::ir::{Function, Program};
 use anyhow::Result;
 type AnalysisDomain = HashMap<Path, HashSet<Variable>>;
+use models::Model;
+
+pub use print::{ir_with_inferred_shapes_to_string, print_ir_with_inferred_shapes};
 
 pub trait JoinSemiLattice: Eq {
     fn join(&mut self, other: &Self);
@@ -36,39 +39,39 @@ impl JoinSemiLattice for AnalysisDomain {
 }
 
 pub struct GlobalAnalysis {
-    functions: HashMap<Path, FunctionAnalysis>,
-    models: ModelContext,
+    pub functions: HashMap<Path, FunctionAnalysis>,
+    pub models: Rc<ModelContext>,
 }
 
 impl GlobalAnalysis {
     pub fn new() -> Self {
         Self {
             functions: HashMap::new(),
-            models: ModelContext {},
+            models: Rc::new(ModelContext {}),
         }
     }
 
     pub fn analyze_func(&mut self, func: &Function) -> Result<()> {
         let name = func.identifier.clone();
-        let mut func_analysis = FunctionAnalysis::new(func, &self);
+        let mut func_analysis = FunctionAnalysis::new(func, Rc::clone(&self.models));
         func_analysis.analyze_func(func)?;
         self.functions.insert(name, func_analysis);
         Ok(())
     }
 }
 
-pub struct FunctionAnalysis<'a> {
+pub struct FunctionAnalysis {
     // func: StmtFunctionDef,
     // func: Function,
     // TODO: currently just using Hash{Set,Map}s, but would benefit perhaps
     // from using bitsets, if the speedup is worth it
     pub id: Path,
     pub state: HashMap<Location, AnalysisDomain>,
-    pub global_analysis: &'a GlobalAnalysis,
+    pub models: Rc<ModelContext>,
 }
 
-impl<'a> FunctionAnalysis<'a> {
-    fn new(func: &Function, global_analysis: &'a GlobalAnalysis) -> Self {
+impl FunctionAnalysis {
+    fn new(func: &Function, models: Rc<ModelContext>) -> Self {
         // populate state with initial params
         let mut state = HashMap::new();
 
@@ -84,13 +87,13 @@ impl<'a> FunctionAnalysis<'a> {
         Self {
             id: func.identifier.clone(),
             state,
-            global_analysis,
+            models,
         }
     }
 
     fn broadcast_resolve(&self, l_shape: &Shape, r_shape: &Shape) -> Result<Shape> {
         match (l_shape, r_shape) {
-            (Shape::Known(l_shape), Shape::Known(r_shape)) => {
+            (Shape(l_shape), Shape(r_shape)) => {
                 let mut out_shape = Vec::new();
                 for pair in l_shape.iter().rev().zip_longest(r_shape.iter().rev()) {
                     out_shape.push(match pair {
@@ -123,9 +126,8 @@ impl<'a> FunctionAnalysis<'a> {
                     });
                 }
                 out_shape.reverse();
-                Ok(Shape::Known(out_shape))
+                Ok(Shape(out_shape))
             }
-            (_, _) => Ok(Shape::Unknown), // TODO:
         }
     }
 
@@ -138,31 +140,35 @@ impl<'a> FunctionAnalysis<'a> {
             ExprKind::Binop { left, right, op } => {
                 let l_vars = self.eval_expr(domain, left)?;
                 let r_vars = self.eval_expr(domain, right)?;
+
                 let mut out_vars = HashSet::new();
+
                 let is_matmul = matches!(op, Binop::MatMult);
-                for l_var in l_vars.iter() {
-                    for r_var in r_vars.iter() {
-                        match (l_var, r_var) {
-                            (Variable::Top, _) | (_, Variable::Top) => {
-                                out_vars.insert(Variable::Top);
-                            }
-                            (Variable::Tensor(l_shape), Variable::Tensor(r_shape)) => {
-                                if is_matmul {
-                                } else {
-                                    let out_shape = self.broadcast_resolve(&l_shape, &r_shape)?;
-                                    out_vars.insert(Variable::Tensor(out_shape));
-                                }
-                            }
-                            (Variable::Tensor(shape), _) | (_, Variable::Tensor(shape)) => {
-                                // other should be some number, will retain tensor operand shape
-                                out_vars.insert(Variable::Tensor(shape.clone()));
-                            }
-                            (Variable::DimVar(l_dvar), Variable::DimVar(r_dvar)) => {
-                                // TODO: in the future, we want to get some symbolic expr out of this
-                                todo!()
+
+                for (l_var, r_var) in l_vars.iter().cartesian_product(r_vars.iter()) {
+                    let out_var = match (l_var, r_var) {
+                        (Variable::Top, _) | (_, Variable::Top) => Variable::Top,
+                        (Variable::Tensor(l_shape), Variable::Tensor(r_shape)) => {
+                            if is_matmul {
+                                let matmul_model = self.models.resolve("torch.matmul").unwrap();
+                                let args = vec![l_var, r_var];
+                                Variable::Tensor(matmul_model.infer(args, HashMap::new())?)
+                            } else {
+                                let out_shape = self.broadcast_resolve(&l_shape, &r_shape)?;
+                                Variable::Tensor(out_shape)
                             }
                         }
-                    }
+                        (Variable::Tensor(shape), _) | (_, Variable::Tensor(shape)) => {
+                            // other should be some number, will retain tensor operand shape
+                            Variable::Tensor(shape.clone())
+                        }
+                        (Variable::DimVar(l_dvar), Variable::DimVar(r_dvar)) => {
+                            // TODO: in the future, we want to get some symbolic expr out of this
+                            todo!()
+                        }
+                    };
+
+                    out_vars.insert(out_var);
                 }
                 Ok(out_vars)
             }
@@ -172,7 +178,52 @@ impl<'a> FunctionAnalysis<'a> {
                 pos_args,
                 keyword_args,
             } => {
-                todo!()
+                let args = pos_args
+                    .iter()
+                    .map(|arg_expr| self.eval_expr(domain, arg_expr))
+                    .collect::<Result<Vec<HashSet<Variable>>>>()?;
+                let kwargs = keyword_args
+                    .iter()
+                    .map(|(n, arg_expr)| Ok((n.clone(), self.eval_expr(domain, arg_expr)?)))
+                    .collect::<Result<Vec<(String, HashSet<Variable>)>>>()?;
+
+                let args_products = args.iter().multi_cartesian_product();
+                let kw = kwargs.iter().map(|(n, _)| n.clone());
+                let kwargs_products: Vec<HashMap<_, _>> = kwargs
+                    .iter()
+                    .map(|(n, vars)| vars)
+                    .multi_cartesian_product()
+                    .map(|vars| kw.clone().zip(vars).collect())
+                    .collect();
+
+                let mut out_vars = HashSet::new();
+
+                match receiver {
+                    None => {
+                        let func = function.to_dot_string();
+
+                        match self.models.resolve(&func) {
+                            Some(model) => {
+                                for (args, kwargs) in
+                                    args_products.cartesian_product(kwargs_products)
+                                {
+                                    let any_top = args.iter().any(|v| matches!(v, Variable::Top))
+                                        || kwargs.iter().any(|(_, v)| matches!(v, Variable::Top));
+                                    if any_top {
+                                        out_vars.insert(Variable::Top);
+                                    } else {
+                                        out_vars
+                                            .insert(Variable::Tensor(model.infer(args, kwargs)?));
+                                    }
+                                }
+                            }
+                            None => todo!(),
+                        }
+                    }
+                    Some(receiver) => todo!(),
+                }
+
+                Ok(out_vars)
             }
             ExprKind::Constant(c) => match c {
                 Constant::Int(i) => {

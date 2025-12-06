@@ -1,10 +1,14 @@
-use std::{collections::HashMap, fmt};
+use std::{fmt, fmt::Write};
 
 use itertools::Itertools;
 
 use crate::{
     analysis::{AnalysisDomain, FunctionAnalysis, GlobalAnalysis},
-    utils::write_comma_separated,
+    ir::{
+        Function,
+        types::{Location, Path},
+    },
+    utils::{indent, write_comma_separated},
 };
 
 use super::types::{DimKind, DimVar, Shape, Variable};
@@ -22,24 +26,18 @@ impl fmt::Display for DimVar {
 impl fmt::Display for Variable {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Variable::Top => write!(f, "NonTensor"),
+            Variable::Top => write!(f, "⟙"),
             Variable::DimVar(dim_var) => write!(f, "{}", dim_var),
             Variable::Tensor(shape) => write!(f, "{}", shape),
-            Variable::Top => write!(f, "⟙"),
         }
     }
 }
 
 impl fmt::Display for Shape {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Shape::Unknown => write!(f, "Unknown"),
-            Shape::Known(dim_vars) => {
-                write!(f, "[")?;
-                write_comma_separated(f, dim_vars)?;
-                write!(f, "]")
-            }
-        }
+        write!(f, "[")?;
+        write_comma_separated(f, &self.0)?;
+        write!(f, "]")
     }
 }
 impl fmt::Display for FunctionAnalysis {
@@ -48,7 +46,7 @@ impl fmt::Display for FunctionAnalysis {
         for (loc, domain) in self
             .state
             .iter()
-            .sorted_by(|(l_a, d_a), (l_b, d_b)| Ord::cmp(*l_a, *l_b))
+            .sorted_by(|(l_a, _), (l_b, _)| Ord::cmp(*l_a, *l_b))
         {
             write!(f, "  {}\n", loc)?;
             for (path, vars) in domain.iter() {
@@ -68,4 +66,75 @@ impl fmt::Display for GlobalAnalysis {
         }
         Ok(())
     }
+}
+
+#[allow(dead_code)]
+fn format_annotation(domain: Option<&AnalysisDomain>, target: &Path) -> String {
+    match domain.and_then(|d| d.get(target)) {
+        Some(vars) => {
+            let shapes: Vec<_> = vars
+                .iter()
+                .filter_map(|var| match var {
+                    Variable::Tensor(shape) => Some(format!("{}", shape)),
+                    _ => None,
+                })
+                .sorted()
+                .collect();
+
+            if shapes.is_empty() {
+                "{?}".to_string()
+            } else {
+                format!("{{{}}}", shapes.join(", "))
+            }
+        }
+        None => "{?}".to_string(),
+    }
+}
+
+#[allow(dead_code)]
+pub fn ir_with_inferred_shapes_to_string(ir: &Function, func_facts: &FunctionAnalysis) -> String {
+    let mut output = String::new();
+
+    write!(output, "def {}(", ir.identifier).unwrap();
+    for (i, param) in ir.params.iter().enumerate() {
+        if i > 0 {
+            output.push_str(", ");
+        }
+        write!(output, "{}", param).unwrap();
+    }
+    output.push_str("):\n");
+
+    for block_idx in ir.blocks() {
+        let block = ir.data(block_idx);
+        let mut block_content = String::new();
+
+        for (instr_idx, stmt) in block.statements.iter().enumerate() {
+            let loc = Location {
+                block: block_idx,
+                instr: instr_idx,
+            };
+            let domain = func_facts.state.get(&loc);
+
+            let annotated_stmt = if let Some(target) = &stmt.target {
+                let annotation = format_annotation(domain, target);
+                format!("{}: {} = {}", target, annotation, stmt.value)
+            } else {
+                format!("{}", stmt.value)
+            };
+
+            writeln!(block_content, "{}", annotated_stmt).unwrap();
+        }
+
+        writeln!(block_content, "{}", block.terminator).unwrap();
+
+        write!(output, "  {}:\n", block_idx).unwrap();
+        output.push_str(&indent(indent(&block_content)));
+    }
+
+    output
+}
+
+#[allow(dead_code)]
+pub fn print_ir_with_inferred_shapes(ir: &Function, func_facts: &FunctionAnalysis) {
+    print!("{}", ir_with_inferred_shapes_to_string(ir, func_facts));
 }

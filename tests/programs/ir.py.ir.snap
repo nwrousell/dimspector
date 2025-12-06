@@ -18,12 +18,12 @@ def single_return():
     return 1 + 2
 
 
-def params(a: {[a, b]}, b: {[b, c]}):
+def params(a: [a, b], b: [b, c]):
   bb0:
     return a @ b
 
 
-def if_else_join(a: NonTensor):
+def if_else_join(a: s0):
   bb0:
     jmp bb1 if a else bb2
   bb2:
@@ -36,7 +36,7 @@ def if_else_join(a: NonTensor):
     return b
 
 
-def if_else_no_join(a: NonTensor):
+def if_else_no_join(a: s0):
   bb0:
     jmp bb1 if a else bb2
   bb2:
@@ -45,14 +45,14 @@ def if_else_no_join(a: NonTensor):
     return 1 + 2
 
 
-def method_vs_func(a: NonTensor):
+def method_vs_func(a: s0):
   bb0:
     torch.ones(1, 2)
     a.reshape(1)
     return
 
 
-def simple_while(n: NonTensor):
+def simple_while(n: s0):
   bb0:
     i = 0
     jump bb1
@@ -65,7 +65,7 @@ def simple_while(n: NonTensor):
     jump bb1
 
 
-def simple_for(n: NonTensor):
+def simple_for(n: s0):
   bb0:
     total = 0
     jump bb1
@@ -78,7 +78,7 @@ def simple_for(n: NonTensor):
     jump bb1
 
 
-def while_with_if(n: NonTensor):
+def while_with_if(n: s0):
   bb0:
     i = 0
     jump bb1
@@ -98,7 +98,7 @@ def while_with_if(n: NonTensor):
     jump bb1
 
 
-def nested_for(n: NonTensor, m: NonTensor):
+def nested_for(n: s0, m: s1):
   bb0:
     total = 0
     jump bb1
@@ -117,7 +117,7 @@ def nested_for(n: NonTensor, m: NonTensor):
     jump bb4
 
 
-def nested_while(n: NonTensor, m: NonTensor):
+def nested_while(n: s0, m: s1):
   bb0:
     i = 0
     j = 0
@@ -139,7 +139,7 @@ def nested_while(n: NonTensor, m: NonTensor):
     jump bb4
 
 
-def for_with_if(n: NonTensor):
+def for_with_if(n: s0):
   bb0:
     total = 0
     jump bb1

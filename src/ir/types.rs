@@ -17,6 +17,7 @@ use num_traits::ToPrimitive;
 
 use crate::analysis::Variable;
 
+#[derive(Clone)]
 pub struct Program {
     pub functions: Vec<Function>,
 }
@@ -52,6 +53,7 @@ impl Location {
     };
 }
 
+#[derive(Clone)]
 pub struct Function {
     pub identifier: Path,
     pub cfg: Cfg,
@@ -60,6 +62,7 @@ pub struct Function {
     pub rpo: Vec<BasicBlockIdx>,
 }
 
+#[derive(Clone)]
 pub struct Parameter(pub Path, pub Option<Variable>);
 
 impl Parameter {
@@ -133,6 +136,7 @@ impl Function {
 
 pub struct Annotation;
 
+#[derive(Clone)]
 pub struct BasicBlock {
     pub statements: Vec<Statement>,
     pub terminator: Terminator,
@@ -227,6 +231,7 @@ impl Path {
     }
 }
 
+#[derive(Clone)]
 pub struct Statement {
     pub value: Expr,
     pub target: Option<Path>,

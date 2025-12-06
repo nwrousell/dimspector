@@ -19,7 +19,7 @@ pub enum DimKind {
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct DimVar {
-    kind: DimKind,
+    pub kind: DimKind,
     // TODO: more info potent around this, related to origin of this dimvar which would be
     // useful for debugging
 }
@@ -70,19 +70,13 @@ impl Variable {
         match self {
             Variable::Top => None,
             Variable::DimVar(_) => None,
-            Variable::Tensor(shape) => match shape {
-                Shape::Unknown => None,
-                Shape::Known(dims) => Some(dims.clone()),
-            },
+            Variable::Tensor(shape) => Some(shape.0.clone()),
         }
     }
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub enum Shape {
-    Unknown,
-    Known(Vec<DimVar>),
-}
+pub struct Shape(pub Vec<DimVar>);
 
 impl Shape {
     pub fn from_str(s: &str) -> Self {
@@ -99,6 +93,6 @@ impl Shape {
             }
         }
 
-        Self::Known(dims)
+        Self(dims)
     }
 }

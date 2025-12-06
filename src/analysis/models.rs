@@ -1,19 +1,11 @@
-use std::collections::HashMap;
+use core::panic;
+use std::{collections::HashMap, sync::LazyLock};
 
 use anyhow::{Result, anyhow};
+use num_traits::sign;
 
 use crate::analysis::{DimVar, Shape, Variable};
 
-/// Macro to extract and validate arguments from a HashMap.
-///
-/// Usage:
-/// ```rust
-/// let (a, b, dims) = get_args!(args, TensorDot,
-///     a: as_shape => "Tensor",
-///     b: as_shape_dims => "Tensor",
-///     dims: as_dimvar => "DimVar"
-/// )?;
-/// ```
 macro_rules! get_args {
     ($args:expr, $model_name:ident, $( $param:ident : $method:ident => $type_name:expr ),+ $(,)?) => {
         {
@@ -38,8 +30,8 @@ fn constraint_equal(_dim1: DimVar, _dim2: DimVar) -> Result<()> {
 
 pub struct ModelContext {}
 
-trait Model {
-    fn infer(args: HashMap<&str, Variable>) -> Result<Shape>;
+pub trait Model {
+    fn infer(&self, args: Vec<&Variable>, kwargs: HashMap<String, &Variable>) -> Result<Shape>;
 }
 
 impl ModelContext {
@@ -56,42 +48,73 @@ impl ModelContext {
     }
 }
 
-struct MatmulModel;
-impl Model for MatmulModel {
-    fn infer(args: HashMap<&str, Variable>) -> Result<Shape> {
-        // TODO: also deal with out (mutates)
+pub fn resolve_args(
+    args: Vec<&Variable>,
+    kwargs: HashMap<String, &Variable>,
+    signature: impl Iterator<Item = (String, Option<Variable>)>,
+) -> HashMap<String, Variable> {
+    let mut mapping = HashMap::new();
 
+    for (i, (name, default)) in signature.into_iter().enumerate() {
+        let arg = if let Some(pos_arg) = args.get(i) {
+            pos_arg.clone()
+        } else if let Some(arg) = kwargs.get(&name) {
+            arg.clone()
+        } else if let Some(default_arg) = &default {
+            default_arg
+        } else {
+            panic!("arg not found for function");
+        };
+
+        mapping.insert(name, arg.clone());
+    }
+
+    mapping
+}
+
+type Signature = Vec<(String, Option<Variable>)>;
+
+struct MatmulModel;
+
+static MATMUL_SIGNATURE: LazyLock<Signature> =
+    LazyLock::new(|| vec![("input".to_string(), None), ("other".to_string(), None)]);
+
+impl Model for MatmulModel {
+    fn infer(&self, args: Vec<&Variable>, kwargs: HashMap<String, &Variable>) -> Result<Shape> {
+        // TODO: also deal with out (mutates)
+        let args = resolve_args(args, kwargs, MATMUL_SIGNATURE.iter().cloned());
         let (input_shape, other_shape) = get_args!(args, Matmul,
-            input_shape: as_shape_dims => "Tensor",
-            other_shape: as_shape_dims => "Tensor",
+            input: as_shape_dims => "Tensor",
+            other: as_shape_dims => "Tensor",
         )?;
 
         match (input_shape.len(), other_shape.len()) {
+            (0, _) | (_, 0) => {
+                panic!("matmul with a scalar is not allowed!")
+            }
+
             // dot product
             (1, 1) => {
                 constraint_equal(input_shape[0].clone(), other_shape[0].clone())?;
-                Ok(Shape::Known(vec![])) // Scalar result
+                Ok(Shape(vec![])) // Scalar result
             }
 
             // matrix-matrix
             (2, 2) => {
                 constraint_equal(input_shape[1].clone(), other_shape[0].clone())?;
-                Ok(Shape::Known(vec![
-                    input_shape[0].clone(),
-                    other_shape[1].clone(),
-                ]))
+                Ok(Shape(vec![input_shape[0].clone(), other_shape[1].clone()]))
             }
 
             // prepend 1, multiply, remove prepended dim
             (1, 2) => {
                 constraint_equal(input_shape[0].clone(), other_shape[0].clone())?;
-                Ok(Shape::Known(vec![other_shape[1].clone()]))
+                Ok(Shape(vec![other_shape[1].clone()]))
             }
 
             // matrix-vector product
             (2, 1) => {
                 constraint_equal(input_shape[1].clone(), other_shape[0].clone())?;
-                Ok(Shape::Known(vec![input_shape[0].clone()]))
+                Ok(Shape(vec![input_shape[0].clone()]))
             }
 
             // batched matrix multiply
@@ -155,11 +178,10 @@ impl Model for MatmulModel {
                     result_dims.pop();
                 }
 
-                Ok(Shape::Known(result_dims))
+                Ok(Shape(result_dims))
             }
 
-            // Fallback for unknown cases
-            _ => Ok(Shape::Unknown),
+            _ => unreachable!("above cases are exhaustive"),
         }
     }
 }

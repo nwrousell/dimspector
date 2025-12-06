@@ -1,5 +1,5 @@
 use clap::Parser;
-use torch_infer2::analysis::analyze;
+use torch_infer2::analysis::{analyze, print_ir_with_inferred_shapes};
 // use miette::{MietteHandlerOpts, Result};
 use std::path::PathBuf;
 
@@ -37,8 +37,14 @@ fn run(file: PathBuf) -> Result<()> {
     let ir = torch_infer2::ir::lower(program)?;
     log::debug!("IR:\n{}", ir);
 
-    let res = analyze(ir)?;
-    log::debug!("Analysis:\n{}", res);
+    let res = analyze(ir.clone())?;
+    // log::debug!("Analysis:\n{}", res);
+
+    for (name, facts) in &res.functions {
+        let func = ir.functions.iter().find(|f| f.identifier == *name).unwrap();
+        print_ir_with_inferred_shapes(func, facts);
+        println!("\n")
+    }
 
     Ok(())
 }
