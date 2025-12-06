@@ -1,5 +1,7 @@
 use std::{collections::HashMap, fmt};
 
+use itertools::Itertools;
+
 use crate::{
     analysis::{AnalysisDomain, FunctionAnalysis, GlobalAnalysis},
     utils::write_comma_separated,
@@ -43,7 +45,11 @@ impl fmt::Display for Shape {
 impl fmt::Display for FunctionAnalysis {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Function {}\n", self.id)?;
-        for (loc, domain) in self.state.iter() {
+        for (loc, domain) in self
+            .state
+            .iter()
+            .sorted_by(|(l_a, d_a), (l_b, d_b)| Ord::cmp(*l_a, *l_b))
+        {
             write!(f, "  {}\n", loc)?;
             for (path, vars) in domain.iter() {
                 write!(f, "    {} => {{", path)?;

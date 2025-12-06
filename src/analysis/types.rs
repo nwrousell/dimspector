@@ -5,7 +5,17 @@ pub enum DimKind {
     Named(String),
     Concrete(i64),
     // TODO: DimExpr: expr between dimvars
+    // Add {
+    //     left: Box<DimExpr>,
+    //     right: Box<DimExpr>,
+    // },
+    // Mul {
+    //     left: Box<DimExpr>,
+    //     right: Box<DimExpr>,
+    // },
 }
+
+// impl Eq for DimExpr {}
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct DimVar {

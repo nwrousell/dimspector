@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{cmp::Ordering, collections::HashMap};
 
 use crate::{analysis::DimVar, utils};
 use itertools::Either;
@@ -28,6 +28,21 @@ pub type PartialCfg = DiGraph<Option<BasicBlock>, ()>;
 pub struct Location {
     pub block: BasicBlockIdx,
     pub instr: usize,
+}
+
+impl PartialOrd for Location {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Location {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match self.block.cmp(&other.block) {
+            Ordering::Equal => self.instr.cmp(&other.instr),
+            ord => ord,
+        }
+    }
 }
 
 impl Location {
