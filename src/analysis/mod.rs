@@ -1,4 +1,5 @@
 mod errors;
+mod models;
 mod print;
 mod types;
 
@@ -10,6 +11,7 @@ use itertools::{Either, Itertools};
 pub use types::{DimVar, Shape, Variable};
 
 use crate::analysis::errors::ShapeError;
+use crate::analysis::models::ModelContext;
 use crate::analysis::types::DimKind;
 use crate::ir::types::{Binop, Constant, ExprKind, Location};
 use crate::ir::{Expr, Parameter, Path, Statement, Terminator};
@@ -35,35 +37,38 @@ impl JoinSemiLattice for AnalysisDomain {
 
 pub struct GlobalAnalysis {
     functions: HashMap<Path, FunctionAnalysis>,
+    models: ModelContext,
 }
 
 impl GlobalAnalysis {
     pub fn new() -> Self {
         Self {
             functions: HashMap::new(),
+            models: ModelContext {},
         }
     }
 
     pub fn analyze_func(&mut self, func: &Function) -> Result<()> {
         let name = func.identifier.clone();
-        let mut func_analysis = FunctionAnalysis::new(func);
+        let mut func_analysis = FunctionAnalysis::new(func, &self);
         func_analysis.analyze_func(func)?;
         self.functions.insert(name, func_analysis);
         Ok(())
     }
 }
 
-pub struct FunctionAnalysis {
+pub struct FunctionAnalysis<'a> {
     // func: StmtFunctionDef,
     // func: Function,
-    // TODO: currently just using Hash{Set,Map}s, but would beneifit perhaps
-    // from inenvitably using bitsets, if the speedup is worth it
+    // TODO: currently just using Hash{Set,Map}s, but would benefit perhaps
+    // from using bitsets, if the speedup is worth it
     pub id: Path,
     pub state: HashMap<Location, AnalysisDomain>,
+    pub global_analysis: &'a GlobalAnalysis,
 }
 
-impl FunctionAnalysis {
-    fn new(func: &Function) -> Self {
+impl<'a> FunctionAnalysis<'a> {
+    fn new(func: &Function, global_analysis: &'a GlobalAnalysis) -> Self {
         // populate state with initial params
         let mut state = HashMap::new();
 
@@ -79,6 +84,7 @@ impl FunctionAnalysis {
         Self {
             id: func.identifier.clone(),
             state,
+            global_analysis,
         }
     }
 
@@ -142,8 +148,6 @@ impl FunctionAnalysis {
                             }
                             (Variable::Tensor(l_shape), Variable::Tensor(r_shape)) => {
                                 if is_matmul {
-                                    // TODO: maybe this should just resolve to the tensor dot stub
-                                    todo!()
                                 } else {
                                     let out_shape = self.broadcast_resolve(&l_shape, &r_shape)?;
                                     out_vars.insert(Variable::Tensor(out_shape));

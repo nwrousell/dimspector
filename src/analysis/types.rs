@@ -1,7 +1,5 @@
 // NOTE: this representation disallows A[..., d] shapes
 
-use std::collections::HashSet;
-
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum DimKind {
     Named(String),
@@ -39,6 +37,35 @@ pub enum Variable {
     Top,
     DimVar(DimVar),
     Tensor(Shape),
+}
+
+impl Variable {
+    pub fn as_dimvar(&self) -> Option<&DimVar> {
+        match self {
+            Variable::Top => None,
+            Variable::DimVar(dim_var) => Some(dim_var),
+            Variable::Tensor(_) => None,
+        }
+    }
+
+    pub fn as_shape(&self) -> Option<&Shape> {
+        match self {
+            Variable::Top => None,
+            Variable::DimVar(_) => None,
+            Variable::Tensor(shape) => Some(shape),
+        }
+    }
+
+    pub fn as_shape_dims(&self) -> Option<Vec<DimVar>> {
+        match self {
+            Variable::Top => None,
+            Variable::DimVar(_) => None,
+            Variable::Tensor(shape) => match shape {
+                Shape::Unknown => None,
+                Shape::Known(dims) => Some(dims.clone()),
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
