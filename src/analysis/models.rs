@@ -1,9 +1,10 @@
 use core::panic;
+use std::cmp::max;
 use std::{collections::HashMap, sync::LazyLock};
 
 use anyhow::{Result, anyhow};
+use itertools::EitherOrBoth::{Both, Left, Right};
 use itertools::Itertools;
-use num_traits::sign;
 
 use crate::analysis::{DimKind, DimVar, Shape, Variable};
 
@@ -22,23 +23,58 @@ macro_rules! get_args {
     };
 }
 
-fn constraint_equal(_dim1: DimVar, _dim2: DimVar) -> Result<()> {
+fn constraint_equal(_dim1: &DimVar, _dim2: &DimVar) -> Result<()> {
     // can have this add constraint to some structure to be continually checked
     // or can eagerly check, erroring on cases where a = b (forcing user to annotate them both as 'a')
     // ? Are there other cases where eagerly checking loses info?
     Ok(())
 }
 
-pub struct ModelContext {}
+fn constraint_equal_one(_dim: &DimVar) -> Result<()> {
+    Ok(())
+}
+
+pub struct ModelContext {
+    pub torch: TorchModels,
+}
+
+impl ModelContext {
+    pub fn new() -> Self {
+        Self {
+            torch: TorchModels::default(),
+        }
+    }
+}
+
+pub struct TorchModels {
+    pub matmul: MatmulModel,
+    pub eltwise: EltwiseModel,
+    pub rdx: RdxModel,
+    pub broadcast: BroadcastModel,
+}
+
+impl Default for TorchModels {
+    fn default() -> Self {
+        Self {
+            matmul: MatmulModel,
+            eltwise: EltwiseModel,
+            rdx: RdxModel,
+            broadcast: BroadcastModel,
+        }
+    }
+}
 
 pub trait Model {
     fn infer(&self, args: Vec<&Variable>, kwargs: HashMap<String, &Variable>) -> Result<Shape>;
 }
 
 impl ModelContext {
-    pub fn resolve_torch_model(&self, path: &str) -> Option<Box<dyn Model>> {
+    pub fn resolve_torch_model(&self, path: &str) -> Option<&dyn Model> {
         match path {
-            "torch.matmul" => Some(Box::new(MatmulModel)),
+            "torch.matmul" => Some(&self.torch.matmul),
+            "torch.add" | "torch.sub" | "torch.subtract" | "torch.mul" | "torch.multiply"
+            | "torch.div" | "torch.divide" | "torch.true_divide" | "torch.floor_divide"
+            | "torch.remainder" | "torch.fmod" | "torch.pow" => Some(&self.torch.broadcast),
             "torch.abs"
             | "torch.acos"
             | "torch.acosh"
@@ -92,13 +128,13 @@ impl ModelContext {
             | "torch.special.ndtr"
             | "torch.special.ndtri"
             | "torch.special.logit"
-            | "torch.special.digamma" => Some(Box::new(EltwiseModel)),
-            "torch.sum" => Some(Box::new(RdxModel)),
+            | "torch.special.digamma" => Some(&self.torch.eltwise),
+            "torch.sum" => Some(&self.torch.rdx),
             _ => None,
         }
     }
 
-    pub fn resolve(&self, path: &str) -> Option<Box<dyn Model>> {
+    pub fn resolve(&self, path: &str) -> Option<&dyn Model> {
         self.resolve_torch_model(path)
 
         // can handle user models here later
@@ -114,9 +150,9 @@ pub fn resolve_args(
 
     for (i, (name, default)) in signature.into_iter().enumerate() {
         let arg = if let Some(pos_arg) = args.get(i) {
-            pos_arg.clone()
+            pos_arg
         } else if let Some(arg) = kwargs.get(&name) {
-            arg.clone()
+            arg
         } else if let Some(default_arg) = &default {
             default_arg
         } else {
@@ -129,19 +165,57 @@ pub fn resolve_args(
     mapping
 }
 
-#[derive(Clone)]
-struct DefaultNone;
 type Signature = Vec<(String, Option<Variable>)>;
 
-struct MatmulModel;
+pub struct BroadcastModel;
 
-static MATMUL_SIGNATURE: LazyLock<Signature> =
+impl Model for BroadcastModel {
+    fn infer(&self, args: Vec<&Variable>, kwargs: HashMap<String, &Variable>) -> Result<Shape> {
+        let args = resolve_args(args, kwargs, INPUT_OTHER_SIGNATURE.iter().cloned());
+        let (l_shape, r_shape) = get_args!(args, Matmul,
+            input: as_shape_dims => "Tensor",
+            other: as_shape_dims => "Tensor",
+        )?;
+
+        let mut out_shape = Vec::new();
+        for pair in l_shape.iter().rev().zip_longest(r_shape.iter().rev()) {
+            let next_dim = match pair {
+                Both(l_dim, r_dim) => match (l_dim.kind(), r_dim.kind()) {
+                    (DimKind::Named(_), DimKind::Named(_)) => {
+                        constraint_equal(l_dim, r_dim)?;
+                        l_dim.clone()
+                    }
+                    (DimKind::Named(sym), DimKind::Concrete(_))
+                    | (DimKind::Concrete(_), DimKind::Named(sym)) => {
+                        constraint_equal_one(l_dim)?;
+                        DimVar::new(DimKind::Named(sym))
+                    }
+                    (DimKind::Concrete(l_n), DimKind::Concrete(r_n)) => {
+                        // TODO: how to represent OR of constraints (only for concrete case)?
+                        // (constraint_equal_one(l_dim) | constraint_equal_one(r_dim)) | constraint_equal(l_dim, r_dim)
+
+                        DimVar::new(DimKind::Concrete(max(l_n, r_n)))
+                    }
+                },
+                Left(v) | Right(v) => v.clone(),
+            };
+
+            out_shape.push(next_dim);
+        }
+        out_shape.reverse();
+        Ok(Shape(out_shape))
+    }
+}
+
+pub struct MatmulModel;
+
+static INPUT_OTHER_SIGNATURE: LazyLock<Signature> =
     LazyLock::new(|| vec![("input".to_string(), None), ("other".to_string(), None)]);
 
 impl Model for MatmulModel {
     fn infer(&self, args: Vec<&Variable>, kwargs: HashMap<String, &Variable>) -> Result<Shape> {
         // TODO: also deal with out (mutates)
-        let args = resolve_args(args, kwargs, MATMUL_SIGNATURE.iter().cloned());
+        let args = resolve_args(args, kwargs, INPUT_OTHER_SIGNATURE.iter().cloned());
         let (input_shape, other_shape) = get_args!(args, Matmul,
             input: as_shape_dims => "Tensor",
             other: as_shape_dims => "Tensor",
@@ -154,25 +228,25 @@ impl Model for MatmulModel {
 
             // dot product
             (1, 1) => {
-                constraint_equal(input_shape[0].clone(), other_shape[0].clone())?;
+                constraint_equal(&input_shape[0], &other_shape[0])?;
                 Ok(Shape(vec![])) // Scalar result
             }
 
             // matrix-matrix
             (2, 2) => {
-                constraint_equal(input_shape[1].clone(), other_shape[0].clone())?;
+                constraint_equal(&input_shape[1], &other_shape[0])?;
                 Ok(Shape(vec![input_shape[0].clone(), other_shape[1].clone()]))
             }
 
             // prepend 1, multiply, remove prepended dim
             (1, 2) => {
-                constraint_equal(input_shape[0].clone(), other_shape[0].clone())?;
+                constraint_equal(&input_shape[0], &other_shape[0])?;
                 Ok(Shape(vec![other_shape[1].clone()]))
             }
 
             // matrix-vector product
             (2, 1) => {
-                constraint_equal(input_shape[1].clone(), other_shape[0].clone())?;
+                constraint_equal(&input_shape[1], &other_shape[0])?;
                 Ok(Shape(vec![input_shape[0].clone()]))
             }
 
@@ -214,7 +288,7 @@ impl Model for MatmulModel {
                 };
 
                 // Check matrix dimension constraint: input[-1] == other[-2]
-                constraint_equal(input_matrix.1[0].clone(), other_matrix.0[0].clone())?;
+                constraint_equal(&input_matrix.1[0], &other_matrix.0[0])?;
 
                 // Broadcast batch dimensions (for now, just take the longer one)
                 // In a full implementation, we'd need proper broadcasting logic
@@ -245,7 +319,7 @@ impl Model for MatmulModel {
     }
 }
 
-struct EltwiseModel;
+pub struct EltwiseModel;
 static ELTWISE_SIGNATURE: LazyLock<Signature> = LazyLock::new(|| vec![("input".to_string(), None)]);
 
 // The base model for functions that do an element wise operation, preserving shape
@@ -261,7 +335,7 @@ impl Model for EltwiseModel {
     }
 }
 
-struct RdxModel;
+pub struct RdxModel;
 static RDX_SIGNATURE: LazyLock<Signature> = LazyLock::new(|| {
     vec![
         ("input".to_string(), None),

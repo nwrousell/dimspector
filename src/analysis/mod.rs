@@ -3,22 +3,18 @@ mod models;
 mod print;
 mod types;
 
-use std::cmp::max;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use itertools::EitherOrBoth::{Both, Left, Right};
 use itertools::{Either, Itertools};
 pub use types::{DimKind, DimVar, Shape, Variable};
 
-use crate::analysis::errors::ShapeError;
-use crate::analysis::models::ModelContext;
+use crate::analysis::models::{Model, ModelContext};
 use crate::ir::types::{Binop, Constant, ExprKind, Location};
 use crate::ir::{Expr, Parameter, Path, Statement, Terminator};
 use crate::ir::{Function, Program};
 use anyhow::Result;
 type AnalysisDomain = HashMap<Path, HashSet<Variable>>;
-use models::Model;
 
 pub use print::{ir_with_inferred_shapes_to_string, print_ir_with_inferred_shapes};
 
@@ -47,7 +43,7 @@ impl GlobalAnalysis {
     pub fn new() -> Self {
         Self {
             functions: HashMap::new(),
-            models: Rc::new(ModelContext {}),
+            models: Rc::new(ModelContext::new()),
         }
     }
 
@@ -91,44 +87,6 @@ impl FunctionAnalysis {
         }
     }
 
-    fn broadcast_resolve(&self, l_shape: &Shape, r_shape: &Shape) -> Result<Shape> {
-        let (Shape(l_shape), Shape(r_shape)) = (l_shape, r_shape);
-
-        let mut out_shape = Vec::new();
-        for pair in l_shape.iter().rev().zip_longest(r_shape.iter().rev()) {
-            out_shape.push(match pair {
-                Both(l_dim, r_dim) => match (l_dim.kind(), r_dim.kind()) {
-                    (DimKind::Named(l_sym), DimKind::Named(r_sym)) => {
-                        // TODO: should we assert they are the same symbol, or potent add constraint?
-                        if l_sym != r_sym {
-                            let err = ShapeError::mismatched(l_dim, r_dim);
-                            return Err(err.into());
-                        }
-                        l_dim.clone()
-                    }
-                    (DimKind::Named(sym), DimKind::Concrete(n))
-                    | (DimKind::Concrete(n), DimKind::Named(sym)) => {
-                        if n != 1 {
-                            let err = ShapeError::mismatched(l_dim, r_dim);
-                            return Err(err.into());
-                        }
-                        DimVar::new(DimKind::Named(sym))
-                    }
-                    (DimKind::Concrete(l_n), DimKind::Concrete(r_n)) => {
-                        if l_n != r_n && (l_n != 1 && r_n != 1) {
-                            let err = ShapeError::mismatched(l_dim, r_dim);
-                            return Err(err.into());
-                        }
-                        DimVar::new(DimKind::Concrete(max(l_n, r_n)))
-                    }
-                },
-                Left(v) | Right(v) => v.clone(),
-            });
-        }
-        out_shape.reverse();
-        Ok(Shape(out_shape))
-    }
-
     fn fold_dimvars(&self, left_dimvar: &DimVar, right_dimvar: &DimVar, op: Binop) -> Variable {
         // could also implement Add, Sub, Mult traits for DimVars, then would just match on op here and dispatch
         let kind = match (left_dimvar.kind(), right_dimvar.kind()) {
@@ -163,13 +121,20 @@ impl FunctionAnalysis {
                 for (l_var, r_var) in l_vars.iter().cartesian_product(r_vars.iter()) {
                     let out_var = match (l_var, r_var) {
                         (Variable::Top, _) | (_, Variable::Top) => Variable::Top,
-                        (Variable::Tensor(l_shape), Variable::Tensor(r_shape)) => {
+                        (Variable::Tensor(_), Variable::Tensor(_)) => {
                             if is_matmul {
-                                let matmul_model = self.models.resolve("torch.matmul").unwrap();
-                                let args = vec![l_var, r_var];
-                                Variable::Tensor(matmul_model.infer(args, HashMap::new())?)
+                                let out_shape = self
+                                    .models
+                                    .torch
+                                    .matmul
+                                    .infer(vec![l_var, r_var], HashMap::new())?;
+                                Variable::Tensor(out_shape)
                             } else {
-                                let out_shape = self.broadcast_resolve(&l_shape, &r_shape)?;
+                                let out_shape = self
+                                    .models
+                                    .torch
+                                    .broadcast
+                                    .infer(vec![l_var, r_var], HashMap::new())?;
                                 Variable::Tensor(out_shape)
                             }
                         }
