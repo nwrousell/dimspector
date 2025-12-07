@@ -43,9 +43,9 @@ def rdx_sum(x: T["b h w c"]):
     return z
 
 
-# def broadcast_dim1(a: T["batch 1 dim"], b: T["batch dim"]):
-#     c = a + b
-#     return c
+def broadcast_dim1(a: T["batch 1 dim"], b: T["batch dim"]):
+    c = a + b
+    return c
 
 
 # def create_ones():
@@ -83,10 +83,10 @@ def rdx_sum(x: T["b h w c"]):
 #     return b
 
 
-# def linear_layer(x: T["batch in_dim"], weight: T["in_dim out_dim"], bias: T["out_dim"]):
-#     out = x @ weight
-#     out = out + bias
-#     return out
+def linear_layer(x: T["batch in_dim"], weight: T["in_dim out_dim"], bias: T["out_dim"]):
+    out = x @ weight
+    out = out + bias
+    return out
 
 
 # def reshape_matmul_reshape(a: T["batch seq d"], weight: T["d d_out"]):
@@ -110,27 +110,27 @@ def rdx_sum(x: T["b h w c"]):
 #     return out
 
 
-# def multi_op_broadcast(a: T["batch h w"], b: T["h w"], c: T["1 w"]):
-#     result = a + b
-#     result = result * c
-#     return result
+def multi_op_broadcast(a: T["batch h w"], b: T["h w"], c: T["1 w"]):
+    result = a + b
+    result = result * c
+    return result
 
 
-# def high_dim_matmul(q: T["batch heads seq d"], k: T["batch heads d seq"]):
-#     scores = q @ k
-#     return scores
+def high_dim_matmul(q: T["batch heads seq d"], k: T["batch heads d seq"]):
+    scores = q @ k
+    return scores
 
 
-# def elementwise_ops(a: T["batch dim"], b: T["dim"]):
-#     add_result = a + b
-#     mul_result = a * b
-#     sub_result = a - b
-#     return add_result, mul_result, sub_result
+def elementwise_ops(a: T["batch dim"], b: T["dim"]):
+    add_result = a + b
+    mul_result = a * b
+    sub_result = a - b
+    return add_result, mul_result, sub_result
 
 
-# def normalization_like(x: T["batch dim"], mean: T["dim"], std: T["dim"]):
-#     normalized = (x - mean) / std
-#     return normalized
+def normalization_like(x: T["batch dim"], mean: T["dim"], std: T["dim"]):
+    normalized = (x - mean) / std
+    return normalized
 
 
 # def conditional_ops(a: T["batch dim"], b: T["dim dim"], use_matmul: bool):
@@ -152,11 +152,11 @@ def rdx_sum(x: T["b h w c"]):
 #     return out
 
 
-# def matmul_chain(a: T["batch m k"], b: T["k n"], c: T["n p"], d: T["p q"]):
-#     ab = a @ b
-#     abc = ab @ c
-#     abcd = abc @ d
-#     return abcd
+def matmul_chain(a: T["batch m k"], b: T["k n"], c: T["n p"], d: T["p q"]):
+    ab = a @ b
+    abc = ab @ c
+    abcd = abc @ d
+    return abcd
 
 
 # def transpose_matmul_transpose(a: T["batch seq d"], weight: T["d d_out"]):
@@ -211,11 +211,11 @@ def rdx_sum(x: T["b h w c"]):
 #     return out
 
 
-# def broadcast_chain(a: T["batch h w"], b: T["h w"], c: T["1 w"], d: T["batch 1 1"]):
-#     step1 = a + b
-#     step2 = step1 * c
-#     step3 = step2 * d
-#     return step3
+def broadcast_chain(a: T["batch h w"], b: T["h w"], c: T["1 w"], d: T["batch 1 1"]):
+    step1 = c + d
+    step2 = b + step1
+    step3 = step2 + a
+    return step3
 
 
 # def conditional_reshape_constraints(x: T["batch d"], flatten: bool, w: T["d out_dim"]):
