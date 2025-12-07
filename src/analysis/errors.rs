@@ -1,7 +1,7 @@
 use miette::{Diagnostic, SourceSpan};
 use thiserror::Error;
 
-use crate::analysis::types::DimVar;
+use crate::analysis::DimVar;
 
 #[derive(Diagnostic, Error, Debug)]
 pub enum ShapeError {

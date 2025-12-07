@@ -27,6 +27,7 @@ fn constraint_equal(_dim1: &DimVar, _dim2: &DimVar) -> Result<()> {
     // can have this add constraint to some structure to be continually checked
     // or can eagerly check, erroring on cases where a = b (forcing user to annotate them both as 'a')
     // ? Are there other cases where eagerly checking loses info?
+
     Ok(())
 }
 
@@ -182,24 +183,17 @@ impl Model for BroadcastModel {
         let mut out_shape = Vec::new();
         for pair in l_shape.iter().rev().zip_longest(r_shape.iter().rev()) {
             let next_dim = match pair {
-                Both(l_dim, r_dim) => match (l_dim.kind(), r_dim.kind()) {
-                    (DimKind::Named(_), DimKind::Named(_)) => {
+                Both(l_dim, r_dim) => {
+                    if l_dim.is_one() {
+                        r_dim.clone()
+                    } else if r_dim.is_one() {
+                        l_dim.clone()
+                    } else {
                         constraint_equal(l_dim, r_dim)?;
                         l_dim.clone()
                     }
-                    (DimKind::Named(sym), DimKind::Concrete(_))
-                    | (DimKind::Concrete(_), DimKind::Named(sym)) => {
-                        constraint_equal_one(l_dim)?;
-                        DimVar::new(DimKind::Named(sym))
-                    }
-                    (DimKind::Concrete(l_n), DimKind::Concrete(r_n)) => {
-                        // TODO: how to represent OR of constraints (only for concrete case)?
-                        // (constraint_equal_one(l_dim) | constraint_equal_one(r_dim)) | constraint_equal(l_dim, r_dim)
-
-                        DimVar::new(DimKind::Concrete(max(l_n, r_n)))
-                    }
-                },
-                Left(v) | Right(v) => v.clone(),
+                }
+                Left(dim) | Right(dim) => dim.clone(),
             };
 
             out_shape.push(next_dim);

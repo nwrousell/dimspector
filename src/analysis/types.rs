@@ -1,48 +1,4 @@
-// NOTE: this representation disallows A[..., d] shapes
-
-use std::ops::Add;
-
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub enum DimKind {
-    Named(String),
-    Concrete(i64),
-    // TODO: DimExpr: expr between dimvars
-    // Add {
-    //     left: Box<DimExpr>,
-    //     right: Box<DimExpr>,
-    // },
-    // Mul {
-    //     left: Box<DimExpr>,
-    //     right: Box<DimExpr>,
-    // },
-}
-
-// impl Eq for DimExpr {}
-
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct DimVar {
-    pub kind: DimKind,
-    // TODO: more info potent around this, related to origin of this dimvar which would be
-    // useful for debugging
-}
-
-impl DimVar {
-    pub fn new(kind: DimKind) -> Self {
-        Self { kind }
-    }
-
-    pub fn kind(&self) -> DimKind {
-        self.kind.clone()
-    }
-}
-
-impl From<i64> for DimVar {
-    fn from(value: i64) -> Self {
-        Self {
-            kind: DimKind::Concrete(value),
-        }
-    }
-}
+use crate::analysis::dimvars::{DimKind, DimVar};
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum Variable {

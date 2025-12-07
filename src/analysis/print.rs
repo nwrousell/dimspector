@@ -3,7 +3,10 @@ use std::{fmt, fmt::Write};
 use itertools::Itertools;
 
 use crate::{
-    analysis::{AnalysisDomain, FunctionAnalysis, GlobalAnalysis},
+    analysis::{
+        AnalysisDomain, FunctionAnalysis, GlobalAnalysis,
+        dimvars::{DimKind, DimVar},
+    },
     ir::{
         Function,
         types::{Location, Path},
@@ -11,15 +14,18 @@ use crate::{
     utils::{indent, write_comma_separated},
 };
 
-use super::types::{DimKind, DimVar, Shape, Variable};
+use super::types::{Shape, Variable};
 
 impl fmt::Display for DimVar {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.kind() {
-            DimKind::Concrete(c) => f.write_fmt(format_args!("{c}"))?,
-            DimKind::Named(n) => f.write_fmt(format_args!("{n}"))?,
+            DimKind::Concrete(c) => write!(f, "{}", c),
+            DimKind::Named(n) => write!(f, "{}", n),
+            DimKind::Add { left, right } => {
+                write!(f, "{} + {}", *left, *right)
+            }
+            DimKind::Mul { left, right } => write!(f, "{} * {}", *left, *right),
         }
-        Ok(())
     }
 }
 

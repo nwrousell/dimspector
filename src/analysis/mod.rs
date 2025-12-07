@@ -1,3 +1,4 @@
+mod dimvars;
 mod errors;
 mod models;
 mod print;
@@ -7,8 +8,9 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use itertools::{Either, Itertools};
-pub use types::{DimKind, DimVar, Shape, Variable};
+pub use types::{Shape, Variable};
 
+pub use crate::analysis::dimvars::{DimKind, DimVar};
 use crate::analysis::models::{Model, ModelContext};
 use crate::ir::types::{Binop, Constant, ExprKind, Location};
 use crate::ir::{Expr, Parameter, Path, Statement, Terminator};
@@ -87,21 +89,13 @@ impl FunctionAnalysis {
         }
     }
 
-    fn fold_dimvars(&self, left_dimvar: &DimVar, right_dimvar: &DimVar, op: Binop) -> Variable {
-        // could also implement Add, Sub, Mult traits for DimVars, then would just match on op here and dispatch
-        let kind = match (left_dimvar.kind(), right_dimvar.kind()) {
-            (DimKind::Concrete(c1), DimKind::Concrete(c2)) => match op {
-                Binop::Add => DimKind::Concrete(c1 + c2),
-                Binop::Sub => DimKind::Concrete(c1 - c2),
-                Binop::Mult => DimKind::Concrete(c1 * c2),
-                _ => {
-                    return Variable::Top;
-                }
-            },
-            _ => todo!("dim kind folding with Named dimvars"),
-        };
-
-        Variable::DimVar(DimVar::new(kind))
+    fn fold_dimvars(&self, left_dimvar: DimVar, right_dimvar: DimVar, op: Binop) -> Variable {
+        match op {
+            Binop::Add => Variable::DimVar(left_dimvar + right_dimvar),
+            Binop::Sub => Variable::DimVar(left_dimvar - right_dimvar),
+            Binop::Mult => Variable::DimVar(left_dimvar * right_dimvar),
+            _ => Variable::Top,
+        }
     }
 
     fn eval_expr(&mut self, domain: &AnalysisDomain, expr: &Expr) -> Result<HashSet<Variable>> {
@@ -151,7 +145,7 @@ impl FunctionAnalysis {
                             _ => Variable::Top,
                         },
                         (Variable::DimVar(l_dvar), Variable::DimVar(r_dvar)) => {
-                            self.fold_dimvars(l_dvar, r_dvar, *op)
+                            self.fold_dimvars(l_dvar.clone(), r_dvar.clone(), *op)
                         }
                         _ => {
                             panic!("runtime error")
