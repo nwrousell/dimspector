@@ -2,6 +2,7 @@ use core::panic;
 use std::{collections::HashMap, sync::LazyLock};
 
 use anyhow::{Result, anyhow};
+use itertools::Itertools;
 use num_traits::sign;
 
 use crate::analysis::{DimKind, DimVar, Shape, Variable};
@@ -280,17 +281,33 @@ impl Model for RdxModel {
         let result_dims = match rdx_dims {
             Variable::DimVar(DimVar {
                 kind: DimKind::Concrete(dim),
-            }) => {
-                println!("{}", dim);
-                match dim {
-                    -1 => input_shape[..input_shape.len() - 1].to_vec(),
-                    dim if 0 <= *dim && *dim < input_shape.len() as i64 => {
-                        let mut res = input_shape.clone();
-                        res.remove(*dim as usize);
-                        res
-                    }
-                    _ => todo!(),
+            }) => match dim {
+                -1 => input_shape[..input_shape.len() - 1].to_vec(),
+                dim if 0 <= *dim && *dim < input_shape.len() as i64 => {
+                    let mut res = input_shape.clone();
+                    res.remove(*dim as usize);
+                    res
                 }
+                _ => todo!(),
+            },
+            Variable::Tuple(vars) => {
+                let mut vars_conc = vars
+                    .iter()
+                    .map(|var| {
+                        let Variable::DimVar(DimVar {
+                            kind: DimKind::Concrete(v),
+                        }) = var
+                        else {
+                            unreachable!("rdx dims should be concrete")
+                        };
+                        v
+                    })
+                    .sorted();
+                input_shape
+                    .into_iter()
+                    .enumerate()
+                    .filter_map(|(i, x)| (!vars_conc.contains(&(i as i64))).then_some(x))
+                    .collect()
             }
             _ => todo!(),
         };

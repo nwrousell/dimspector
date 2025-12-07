@@ -39,7 +39,7 @@ def relu(x: T["b c h w"]):
     return z
 
 def rdx_sum(x: T["b d"]):
-    z = torch.sum(x, dim=1)
+    z = torch.sum(x, dim=0)
     return z
 
 
