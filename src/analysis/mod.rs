@@ -129,6 +129,23 @@ impl FunctionAnalysis {
         Ok(Shape(out_shape))
     }
 
+    fn fold_dimvars(&self, left_dimvar: &DimVar, right_dimvar: &DimVar, op: Binop) -> Variable {
+        // could also implement Add, Sub, Mult traits for DimVars, then would just match on op here and dispatch
+        let kind = match (left_dimvar.kind(), right_dimvar.kind()) {
+            (DimKind::Concrete(c1), DimKind::Concrete(c2)) => match op {
+                Binop::Add => DimKind::Concrete(c1 + c2),
+                Binop::Sub => DimKind::Concrete(c1 - c2),
+                Binop::Mult => DimKind::Concrete(c1 * c2),
+                _ => {
+                    return Variable::Top;
+                }
+            },
+            _ => todo!("dim kind folding with Named dimvars"),
+        };
+
+        Variable::DimVar(DimVar::new(kind))
+    }
+
     fn eval_expr(&mut self, domain: &AnalysisDomain, expr: &Expr) -> Result<HashSet<Variable>> {
         // TODO:
         // - flows of dimvars out of .shape or .size()
@@ -160,14 +177,16 @@ impl FunctionAnalysis {
                             // other should be some number, will retain tensor operand shape
                             Variable::Tensor(shape.clone())
                         }
-                        (Variable::Tuple(l_vars), Variable::Tuple(r_vars)) => {
-                            let mut out = l_vars.clone();
-                            out.extend(r_vars.iter().cloned());
-                            Variable::Tuple(out)
-                        }
+                        (Variable::Tuple(l_vars), Variable::Tuple(r_vars)) => match op {
+                            Binop::Add => {
+                                let mut out = l_vars.clone();
+                                out.extend(r_vars.iter().cloned());
+                                Variable::Tuple(out)
+                            }
+                            _ => Variable::Top,
+                        },
                         (Variable::DimVar(l_dvar), Variable::DimVar(r_dvar)) => {
-                            // TODO: in the future, we want to get some symbolic expr out of this
-                            todo!()
+                            self.fold_dimvars(l_dvar, r_dvar, *op)
                         }
                         (Variable::Tuple(_), _) | (_, Variable::Tuple(_)) => {
                             panic!("runtime error")
@@ -238,14 +257,76 @@ impl FunctionAnalysis {
                 _ => Ok(HashSet::from_iter(vec![Variable::Top])),
             },
             ExprKind::Path(p) => {
-                // TODO: handle indexing
+                if p.parts().last().unwrap() == "shape" {
+                    let prefix = Path::new(&p.parts()[0..(p.parts().len() - 1)]);
+                    return match domain.get(&prefix) {
+                        Some(vars) => {
+                            let shape_dims: Vec<_> =
+                                vars.iter().filter_map(|v| v.as_shape_dims()).collect();
+                            let tuples = shape_dims.into_iter().map(|ds| {
+                                Variable::Tuple(
+                                    ds.into_iter().map(|d| Variable::DimVar(d)).collect(),
+                                )
+                            });
+                            let set = HashSet::from_iter(tuples);
+
+                            Ok(set)
+                        }
+                        None => Ok(HashSet::from_iter([Variable::Top])),
+                    };
+                }
 
                 Ok(domain
                     .get(p)
-                    .unwrap_or(&HashSet::from_iter(vec![Variable::Top]))
+                    .unwrap_or(&HashSet::from_iter([Variable::Top]))
                     .clone())
             }
             ExprKind::Slice { receiver, slice } => todo!(),
+            ExprKind::Index { expr, index } => {
+                let vars = self.eval_expr(domain, expr)?;
+                let indices = self.eval_expr(domain, index)?;
+
+                let mut set = HashSet::new();
+                for (var, index) in vars.iter().cartesian_product(indices.iter()) {
+                    println!("{:?}, {:?}", var, index);
+                    let var = match (var, index) {
+                        // in the case where we know the tensor but not the index, we could technically do a union over the DimVars
+                        (Variable::Top, _) | (_, Variable::Top) => Variable::Top,
+
+                        (Variable::Tuple(elts), Variable::DimVar(d)) => {
+                            if let DimKind::Concrete(c) = d.kind() {
+                                match elts.get(c as usize) {
+                                    Some(v) => v.clone(),
+                                    None => Variable::Top,
+                                }
+                            } else {
+                                Variable::Top
+                            }
+                        }
+                        _ => Variable::Top,
+                    };
+
+                    set.insert(var);
+                }
+
+                Ok(set)
+            }
+
+            ExprKind::Tuple(exprs) => {
+                let results = exprs
+                    .iter()
+                    .map(|e| self.eval_expr(domain, e))
+                    .collect::<Result<Vec<HashSet<Variable>>>>()?;
+
+                let products = results
+                    .iter()
+                    .map(|set| set.iter().cloned())
+                    .multi_cartesian_product();
+
+                Ok(HashSet::from_iter(
+                    products.map(|vars| Variable::Tuple(vars)),
+                ))
+            }
         }
     }
 

@@ -17,7 +17,7 @@ use num_traits::ToPrimitive;
 
 use crate::analysis::Variable;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Program {
     pub functions: Vec<Function>,
 }
@@ -25,7 +25,7 @@ pub struct Program {
 pub type Cfg = DiGraph<BasicBlock, ()>;
 pub type PartialCfg = DiGraph<Option<BasicBlock>, ()>;
 
-#[derive(Eq, Hash, PartialEq, Clone, Copy)]
+#[derive(Eq, Hash, PartialEq, Clone, Copy, Debug)]
 pub struct Location {
     pub block: BasicBlockIdx,
     pub instr: usize,
@@ -53,7 +53,7 @@ impl Location {
     };
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Function {
     pub identifier: Path,
     pub cfg: Cfg,
@@ -62,7 +62,7 @@ pub struct Function {
     pub rpo: Vec<BasicBlockIdx>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Parameter(pub Path, pub Option<Variable>);
 
 impl Parameter {
@@ -136,13 +136,13 @@ impl Function {
 
 pub struct Annotation;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct BasicBlock {
     pub statements: Vec<Statement>,
     pub terminator: Terminator,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum Terminator {
     Jump(BasicBlockIdx),
     CondJump {
@@ -210,7 +210,7 @@ impl From<BasicBlockIdx> for NodeIndex {
     }
 }
 
-#[derive(Clone, Hash, Eq, PartialEq)]
+#[derive(Clone, Hash, Eq, PartialEq, Debug)]
 pub struct Path(Vec<String>);
 
 impl Path {
@@ -231,14 +231,14 @@ impl Path {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Statement {
     pub value: Expr,
     pub target: Option<Path>,
     pub range: TextRange,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Expr {
     pub kind: ExprKind,
     pub range: TextRange,
@@ -287,15 +287,30 @@ impl Expr {
             range,
         }
     }
+
+    pub fn index(range: TextRange, expr: Expr, index: Expr) -> Expr {
+        Expr {
+            kind: ExprKind::Index {
+                expr: Box::new(expr),
+                index: Box::new(index),
+            },
+            range,
+        }
+    }
+    pub fn tuple(elts: Vec<Expr>, range: TextRange) -> Expr {
+        Expr {
+            kind: ExprKind::Tuple(elts),
+            range,
+        }
+    }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum Constant {
     None,
     Bool(bool),
     Str(String),
     Int(i64),
-    Tuple(Vec<Constant>),
     Float(f64),
 }
 
@@ -311,8 +326,9 @@ impl From<ASTConstant> for Constant {
                     .to_i64()
                     .expect("Constant BigInt too big/small for i64"),
             ),
-            ASTConstant::Tuple(constants) => {
-                Self::Tuple(constants.into_iter().map(|c| Constant::from(c)).collect())
+            ASTConstant::Tuple(_) => {
+                todo!()
+                // Self::Tuple(constants.into_iter().map(|c| Constant::from(c)).collect())
             }
             ASTConstant::Float(f) => Constant::Float(f),
             ASTConstant::Complex { .. } => Self::None,
@@ -321,7 +337,7 @@ impl From<ASTConstant> for Constant {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy, Debug)]
 pub enum Binop {
     Add,
     Sub,
@@ -388,7 +404,7 @@ impl From<Operator> for Binop {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum ExprKind {
     Binop {
         left: Box<Expr>,
@@ -403,13 +419,18 @@ pub enum ExprKind {
     },
     Constant(Constant),
     Path(Path),
+    Index {
+        expr: Box<Expr>,
+        index: Box<Expr>,
+    },
+    Tuple(Vec<Expr>),
     Slice {
         receiver: Path,
         slice: Vec<DimRange>,
     },
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum DimRange {
     DimVar(DimVar),
     Range {

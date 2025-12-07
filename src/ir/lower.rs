@@ -188,18 +188,6 @@ impl LowerBody {
     }
 
     fn lower_statement(&mut self, stmt: ASTStmt) -> Result<()> {
-        // if it's an assign, set target and then call handle_expr on value
-        // method call/func call without target -> handle_expr, no target
-
-        // if statement
-        // - add handle_expr(condition) to finish current block
-        // - lower_body on then and else, set up edges to both and from both to a new block
-
-        // while/for loop
-        // - add handle_expr(condition) to finish current block
-        // - lower_body on body
-        // - add edge to body and edge from body to new block
-
         match stmt {
             ASTStmt::Assign(StmtAssign {
                 range,
@@ -494,9 +482,25 @@ impl LowerBody {
             }
 
             ASTExpr::List(expr_list) => todo!(),
-            ASTExpr::Tuple(expr_tuple) => todo!(),
+            ASTExpr::Tuple(ExprTuple { range, elts, .. }) => {
+                let elts = elts
+                    .into_iter()
+                    .map(|e| self.lower_expr_to_expr(e))
+                    .collect::<Result<Vec<Expr>>>()?;
+                Ok(Expr::tuple(elts, range))
+            }
             ASTExpr::Slice(expr_slice) => todo!(),
-            ASTExpr::Subscript(expr_subscript) => todo!(),
+            ASTExpr::Subscript(ExprSubscript {
+                value,
+                slice,
+                range,
+                ..
+            }) => {
+                let expr = self.lower_expr_to_expr(*value)?;
+                let index = self.lower_expr_to_expr(*slice)?;
+
+                Ok(Expr::index(range, expr, index))
+            }
 
             ASTExpr::BoolOp(expr_bool_op) => todo!(),
             ASTExpr::NamedExpr(expr_named_expr) => todo!(),
@@ -545,7 +549,7 @@ impl LowerBody {
 
             ASTExpr::Slice(ExprSlice { .. }) => todo!("slice as part of path"),
 
-            _ => unreachable!("got something weird as part of a path: {:?}", expr),
+            _ => unreachable!("got something weird as part of a path: {:#?}", expr),
         }
     }
 }

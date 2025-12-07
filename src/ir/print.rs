@@ -72,7 +72,7 @@ impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.kind {
             ExprKind::Path(path) => write!(f, "{}", path),
-            ExprKind::Constant(constant) => write!(f, "{}", constant), // Placeholder for constants
+            ExprKind::Constant(constant) => write!(f, "{}", constant),
             ExprKind::Slice { receiver, slice } => {
                 write!(f, "{}[", receiver)?;
                 write_comma_separated(f, slice)?;
@@ -112,6 +112,14 @@ impl fmt::Display for Expr {
 
                 write!(f, ")")
             }
+            ExprKind::Index { expr, index } => {
+                write!(f, "{}[{}]", expr, index)
+            }
+            ExprKind::Tuple(exprs) => {
+                write!(f, "(")?;
+                write_comma_separated(f, exprs)?;
+                write!(f, ")")
+            }
         }
     }
 }
@@ -141,11 +149,6 @@ impl fmt::Display for Constant {
             Constant::Bool(b) => write!(f, "{}", b),
             Constant::Str(s) => write!(f, "'{}'", s),
             Constant::Int(i) => write!(f, "{}", i),
-            Constant::Tuple(constants) => {
-                write!(f, "(")?;
-                write_comma_separated(f, constants)?;
-                write!(f, ")")
-            }
             Constant::Float(float) => write!(f, "{}", float),
         }
     }

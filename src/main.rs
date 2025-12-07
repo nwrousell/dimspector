@@ -32,10 +32,12 @@ fn run(file: PathBuf) -> Result<()> {
     let input = torch_infer2::ast::read(&file)?;
 
     let program = torch_infer2::ast::parse(&input)?;
-    log::debug!("AST:\n{}", program);
+    // log::debug!("AST:\n{}", program);
 
     let ir = torch_infer2::ir::lower(program)?;
     log::debug!("IR:\n{}", ir);
+
+    // println!("IR full:\n{:#?}", ir);
 
     let res = analyze(ir.clone())?;
     // log::debug!("Analysis:\n{}", res);

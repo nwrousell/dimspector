@@ -1,5 +1,7 @@
 // NOTE: this representation disallows A[..., d] shapes
 
+use std::ops::Add;
+
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum DimKind {
     Named(String),

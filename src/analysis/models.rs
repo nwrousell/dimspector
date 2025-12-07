@@ -198,5 +198,6 @@ impl Model for EltwiseModel {
             input: as_shape_dims => "Tensor",
             other: as_shape_dims => "Tensor",
         )?;
+        todo!()
     }
 }

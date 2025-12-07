@@ -70,25 +70,12 @@ impl fmt::Display for GlobalAnalysis {
 }
 
 #[allow(dead_code)]
-fn format_annotation(domain: Option<&AnalysisDomain>, target: &Path) -> String {
-    match domain.and_then(|d| d.get(target)) {
-        Some(vars) => {
-            let shapes: Vec<_> = vars
-                .iter()
-                .filter_map(|var| match var {
-                    Variable::Tensor(shape) => Some(format!("{}", shape)),
-                    _ => None,
-                })
-                .sorted()
-                .collect();
-
-            if shapes.is_empty() {
-                "{?}".to_string()
-            } else {
-                format!("{{{}}}", shapes.join(", "))
-            }
-        }
-        None => "{?}".to_string(),
+fn format_annotation(domain: &AnalysisDomain, target: &Path) -> String {
+    if let Some(vars) = domain.get(target) {
+        let vars = vars.iter().map(|v| format!("{}", v)).join(", ");
+        "{".to_owned() + &vars + "}"
+    } else {
+        "{}".to_owned()
     }
 }
 
@@ -114,7 +101,7 @@ pub fn ir_with_inferred_shapes_to_string(ir: &Function, func_facts: &FunctionAna
                 block: block_idx,
                 instr: instr_idx,
             };
-            let domain = func_facts.state.get(&loc);
+            let domain = func_facts.state.get(&loc).unwrap();
 
             let annotated_stmt = if let Some(target) = &stmt.target {
                 let annotation = format_annotation(domain, target);
