@@ -6,6 +6,7 @@ use anyhow::{Result, anyhow};
 use itertools::EitherOrBoth::{Both, Left, Right};
 use itertools::Itertools;
 
+use crate::analysis::errors::ShapeError;
 use crate::analysis::{DimKind, DimVar, Shape, Variable};
 
 macro_rules! get_args {
@@ -23,16 +24,17 @@ macro_rules! get_args {
     };
 }
 
-fn constraint_equal(_dim1: &DimVar, _dim2: &DimVar) -> Result<()> {
-    // can have this add constraint to some structure to be continually checked
-    // or can eagerly check, erroring on cases where a = b (forcing user to annotate them both as 'a')
-    // ? Are there other cases where eagerly checking loses info?
+fn constraint_equal(dim1: &DimVar, dim2: &DimVar) -> Result<()> {
+    if dim1 != dim2 {
+        let err = ShapeError::MismatchedDims {
+            dim1: dim1.clone(),
+            dim2: dim2.clone(),
+        };
 
-    Ok(())
-}
-
-fn constraint_equal_one(_dim: &DimVar) -> Result<()> {
-    Ok(())
+        Err(anyhow!(err))
+    } else {
+        Ok(())
+    }
 }
 
 pub struct ModelContext {

@@ -11,7 +11,7 @@
     - [ ] .size() - special-cased in method lookup
     - [x] binops between dimvars
     - [x] tuples - Tuple(Vec<Variable>)
-    - [ ] Dim Exprs
+    - [x] Dim Exprs
 
 - [ ] method calls / side effects
 
