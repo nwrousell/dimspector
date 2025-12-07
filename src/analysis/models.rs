@@ -48,7 +48,7 @@ impl ModelContext {
 
 pub struct TorchModels {
     pub matmul: MatmulModel,
-    pub eltwise: EltwiseModel,
+    pub passthrough: PassthroughModel,
     pub rdx: RdxModel,
     pub broadcast: BroadcastModel,
 }
@@ -57,7 +57,7 @@ impl Default for TorchModels {
     fn default() -> Self {
         Self {
             matmul: MatmulModel,
-            eltwise: EltwiseModel,
+            passthrough: PassthroughModel,
             rdx: RdxModel,
             broadcast: BroadcastModel,
         }
@@ -75,6 +75,8 @@ impl ModelContext {
             "torch.add" | "torch.sub" | "torch.subtract" | "torch.mul" | "torch.multiply"
             | "torch.div" | "torch.divide" | "torch.true_divide" | "torch.floor_divide"
             | "torch.remainder" | "torch.fmod" | "torch.pow" => Some(&self.torch.broadcast),
+            "torch.zeros_like" | "torch.ones_like" | "torch.full_like" | "torch.empty_like"
+            | "torch.rand_like" | "torch.randn_like" => Some(&self.torch.passthrough),
             "torch.abs"
             | "torch.acos"
             | "torch.acosh"
@@ -128,7 +130,7 @@ impl ModelContext {
             | "torch.special.ndtr"
             | "torch.special.ndtri"
             | "torch.special.logit"
-            | "torch.special.digamma" => Some(&self.torch.eltwise),
+            | "torch.special.digamma" => Some(&self.torch.passthrough),
             "torch.sum" => Some(&self.torch.rdx),
             _ => None,
         }
@@ -319,14 +321,15 @@ impl Model for MatmulModel {
     }
 }
 
-pub struct EltwiseModel;
-static ELTWISE_SIGNATURE: LazyLock<Signature> = LazyLock::new(|| vec![("input".to_string(), None)]);
+pub struct PassthroughModel;
+static SINGLE_TENSOR_INPUT_SIGNATURE: LazyLock<Signature> =
+    LazyLock::new(|| vec![("input".to_string(), None)]);
 
 // The base model for functions that do an element wise operation, preserving shape
 // This should be fine for most activation like functions
-impl Model for EltwiseModel {
+impl Model for PassthroughModel {
     fn infer(&self, args: Vec<&Variable>, kwargs: HashMap<String, &Variable>) -> Result<Shape> {
-        let args = resolve_args(args, kwargs, ELTWISE_SIGNATURE.iter().cloned());
+        let args = resolve_args(args, kwargs, SINGLE_TENSOR_INPUT_SIGNATURE.iter().cloned());
         let input_shape = get_args!(args, Eltwise,
             input: as_shape => "Tensor",
         )?;
@@ -390,3 +393,15 @@ impl Model for RdxModel {
         Ok(Shape(result_dims))
     }
 }
+
+struct TensorFromShapeModel;
+
+// we'll have to handle *args in the signature
+
+static TENSOR_FROM_SHAPE_SIGNATURE: LazyLock<Signature> = LazyLock::new(|| {
+    vec![
+        ("input".to_string(), None),
+        ("dim".to_string(), Some(Variable::None)),
+        ("keepdim".to_string(), Some(Variable::None)), // TODO: handle this, default = False
+    ]
+});

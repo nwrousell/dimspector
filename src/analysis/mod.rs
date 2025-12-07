@@ -207,7 +207,10 @@ impl FunctionAnalysis {
                                     }
                                 }
                             }
-                            None => todo!(),
+                            None => {
+                                println!("couldn't resolve function {} to model", func);
+                                out_vars.insert(Variable::Top);
+                            }
                         }
                     }
                     Some(receiver) => todo!(),

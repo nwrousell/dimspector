@@ -34,12 +34,14 @@ def scalar_multiply(a: T["batch dim"], scalar: float):
     c = a * scalar
     return c
 
+
 def relu(x: T["b c h w"]):
     z = torch.nn.functional.relu(x)
     return z
 
+
 def rdx_sum(x: T["b h w c"]):
-    z = torch.sum(x, dim=(1,2)) / 3
+    z = torch.sum(x, dim=(1, 2)) / 3
     return z
 
 
@@ -48,14 +50,24 @@ def broadcast_dim1(a: T["batch 1 dim"], b: T["batch dim"]):
     return c
 
 
-# def create_ones():
-#     x = torch.ones(3, 4)
-#     return x
+def create_ones():
+    x = torch.ones(3, 4)
+    return x
 
 
-# def create_zeros():
-#     x = torch.zeros(2, 3, 4)
-#     return x
+def create_zeros():
+    x = torch.zeros(2, 3, 4)
+    return x
+
+
+def create_ones_like(x: T["3 4"]):
+    y = torch.ones_like(x)
+    return y
+
+
+def create_zeros_like(x: T["a b c"]):
+    y = torch.zeros_like(x)
+    return y
 
 
 # def reshape_tensor(a: T["batch seq d"]):
@@ -133,12 +145,12 @@ def normalization_like(x: T["batch dim"], mean: T["dim"], std: T["dim"]):
     return normalized
 
 
-# def conditional_ops(a: T["batch dim"], b: T["dim dim"], use_matmul: bool):
-#     if use_matmul:
-#         result = a @ b
-#     else:
-#         result = a + b
-#     return result
+def conditional_ops(a: T["batch dim"], b: T["dim dim"], use_matmul: bool):
+    if use_matmul:
+        result = a @ b
+    else:
+        result = a + b
+    return result
 
 
 # def multi_step_transform(
@@ -173,14 +185,14 @@ def matmul_chain(a: T["batch m k"], b: T["k n"], c: T["n p"], d: T["p q"]):
 #     return result
 
 
-# def multi_branch_constraints(
-#     x: T["batch d"], w1: T["d d1"], w2: T["d d2"], use_first: bool
-# ):
-#     if use_first:
-#         result = x @ w1
-#     else:
-#         result = x @ w2
-#     return result
+def multi_branch_constraints(
+    x: T["batch d"], w1: T["d d1"], w2: T["d d2"], use_first: bool
+):
+    if use_first:
+        result = x @ w1
+    else:
+        result = x @ w2
+    return result
 
 
 # def attention_pattern(

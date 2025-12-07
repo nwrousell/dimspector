@@ -2,7 +2,7 @@
     - [x] nn.functional (softmax, mean, sum)
     - [x] passthrough
     - [ ] ones, ones_like and friends
-    - [ ] change broadcast to model, use for torch.add, etc.
+    - [x] change broadcast to model, use for torch.add, etc.
     - [ ] unsqueeze / squeeze / expand_dims
     - [ ] reshape/flatten/transpose/permute
 
@@ -23,7 +23,7 @@
 
 
 # Refactor
-- [ ] Make broadcast_resolve a Model
+- [x] Make broadcast_resolve a Model
 - [ ] Set up interning and stop cloning everything everywhere
 - [ ] proper error structs / messages (might want to retain more provenance info)
 - [ ] indexical over locations
