@@ -291,18 +291,15 @@ impl Model for RdxModel {
                 _ => todo!(),
             },
             Variable::Tuple(vars) => {
-                let mut vars_conc = vars
-                    .iter()
-                    .map(|var| {
-                        let Variable::DimVar(DimVar {
-                            kind: DimKind::Concrete(v),
-                        }) = var
-                        else {
-                            unreachable!("rdx dims should be concrete")
-                        };
-                        v
-                    })
-                    .sorted();
+                let mut vars_conc = vars.iter().map(|var| {
+                    let Variable::DimVar(DimVar {
+                        kind: DimKind::Concrete(v),
+                    }) = var
+                    else {
+                        unreachable!("rdx dims should be concrete")
+                    };
+                    v
+                });
                 input_shape
                     .into_iter()
                     .enumerate()
