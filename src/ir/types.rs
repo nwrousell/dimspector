@@ -219,11 +219,7 @@ impl Path {
     }
 
     pub fn to_dot_string(&self) -> String {
-        let mut dot_string = self.0.first().unwrap().clone();
-        for s in self.0.iter().skip(1) {
-            dot_string += s;
-        }
-        dot_string
+        self.0.join(".")
     }
 
     pub fn parts(&self) -> &[String] {

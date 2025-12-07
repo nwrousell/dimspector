@@ -48,6 +48,7 @@ pub enum Variable {
     DimVar(DimVar),
     Tensor(Shape),
     Tuple(Vec<Variable>),
+    None,
 }
 
 impl Variable {
@@ -57,6 +58,7 @@ impl Variable {
             Variable::DimVar(dim_var) => Some(dim_var),
             Variable::Tensor(_) => None,
             Variable::Tuple(_) => None,
+            Variable::None => None,
         }
     }
 
@@ -82,6 +84,7 @@ impl Variable {
                     None
                 }
             }
+            Variable::None => None,
         }
     }
 
@@ -90,7 +93,23 @@ impl Variable {
             Variable::Top => None,
             Variable::DimVar(_) => None,
             Variable::Tensor(shape) => Some(shape.0.clone()),
-            Variable::Tuple(_) => None,
+            Variable::Tuple(vars) => {
+                if vars.iter().all(|var| matches!(var, Variable::DimVar(_))) {
+                    Some(
+                        vars.iter()
+                            .map(|var| {
+                                let Variable::DimVar(dvar) = var else {
+                                    unreachable!("all var in vars should be dimvar")
+                                };
+                                dvar.clone()
+                            })
+                            .collect(),
+                    )
+                } else {
+                    None
+                }
+            }
+            Variable::None => None,
         }
     }
 }

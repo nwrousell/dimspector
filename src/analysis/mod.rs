@@ -169,7 +169,7 @@ impl FunctionAnalysis {
                             // TODO: in the future, we want to get some symbolic expr out of this
                             todo!()
                         }
-                        (Variable::Tuple(_), _) | (_, Variable::Tuple(_)) => {
+                        _ => {
                             panic!("runtime error")
                         }
                     };
