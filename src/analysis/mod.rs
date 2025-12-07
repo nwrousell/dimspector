@@ -92,43 +92,41 @@ impl FunctionAnalysis {
     }
 
     fn broadcast_resolve(&self, l_shape: &Shape, r_shape: &Shape) -> Result<Shape> {
-        match (l_shape, r_shape) {
-            (Shape(l_shape), Shape(r_shape)) => {
-                let mut out_shape = Vec::new();
-                for pair in l_shape.iter().rev().zip_longest(r_shape.iter().rev()) {
-                    out_shape.push(match pair {
-                        Both(l_dim, r_dim) => match (l_dim.kind(), r_dim.kind()) {
-                            (DimKind::Named(l_sym), DimKind::Named(r_sym)) => {
-                                // TODO: should we assert they are the same symbol, or potent add constraint?
-                                if l_sym != r_sym {
-                                    let err = ShapeError::mismatched(l_dim, r_dim);
-                                    return Err(err.into());
-                                }
-                                l_dim.clone()
-                            }
-                            (DimKind::Named(sym), DimKind::Concrete(n))
-                            | (DimKind::Concrete(n), DimKind::Named(sym)) => {
-                                if n != 1 {
-                                    let err = ShapeError::mismatched(l_dim, r_dim);
-                                    return Err(err.into());
-                                }
-                                DimVar::new(DimKind::Named(sym))
-                            }
-                            (DimKind::Concrete(l_n), DimKind::Concrete(r_n)) => {
-                                if l_n != r_n && (l_n != 1 && r_n != 1) {
-                                    let err = ShapeError::mismatched(l_dim, r_dim);
-                                    return Err(err.into());
-                                }
-                                DimVar::new(DimKind::Concrete(max(l_n, r_n)))
-                            }
-                        },
-                        Left(v) | Right(v) => v.clone(),
-                    });
-                }
-                out_shape.reverse();
-                Ok(Shape(out_shape))
-            }
+        let (Shape(l_shape), Shape(r_shape)) = (l_shape, r_shape);
+
+        let mut out_shape = Vec::new();
+        for pair in l_shape.iter().rev().zip_longest(r_shape.iter().rev()) {
+            out_shape.push(match pair {
+                Both(l_dim, r_dim) => match (l_dim.kind(), r_dim.kind()) {
+                    (DimKind::Named(l_sym), DimKind::Named(r_sym)) => {
+                        // TODO: should we assert they are the same symbol, or potent add constraint?
+                        if l_sym != r_sym {
+                            let err = ShapeError::mismatched(l_dim, r_dim);
+                            return Err(err.into());
+                        }
+                        l_dim.clone()
+                    }
+                    (DimKind::Named(sym), DimKind::Concrete(n))
+                    | (DimKind::Concrete(n), DimKind::Named(sym)) => {
+                        if n != 1 {
+                            let err = ShapeError::mismatched(l_dim, r_dim);
+                            return Err(err.into());
+                        }
+                        DimVar::new(DimKind::Named(sym))
+                    }
+                    (DimKind::Concrete(l_n), DimKind::Concrete(r_n)) => {
+                        if l_n != r_n && (l_n != 1 && r_n != 1) {
+                            let err = ShapeError::mismatched(l_dim, r_dim);
+                            return Err(err.into());
+                        }
+                        DimVar::new(DimKind::Concrete(max(l_n, r_n)))
+                    }
+                },
+                Left(v) | Right(v) => v.clone(),
+            });
         }
+        out_shape.reverse();
+        Ok(Shape(out_shape))
     }
 
     fn eval_expr(&mut self, domain: &AnalysisDomain, expr: &Expr) -> Result<HashSet<Variable>> {
@@ -162,9 +160,17 @@ impl FunctionAnalysis {
                             // other should be some number, will retain tensor operand shape
                             Variable::Tensor(shape.clone())
                         }
+                        (Variable::Tuple(l_vars), Variable::Tuple(r_vars)) => {
+                            let mut out = l_vars.clone();
+                            out.extend(r_vars.iter().cloned());
+                            Variable::Tuple(out)
+                        }
                         (Variable::DimVar(l_dvar), Variable::DimVar(r_dvar)) => {
                             // TODO: in the future, we want to get some symbolic expr out of this
                             todo!()
+                        }
+                        (Variable::Tuple(_), _) | (_, Variable::Tuple(_)) => {
+                            panic!("runtime error")
                         }
                     };
 
@@ -191,7 +197,7 @@ impl FunctionAnalysis {
                 let kw = kwargs.iter().map(|(n, _)| n.clone());
                 let kwargs_products: Vec<HashMap<_, _>> = kwargs
                     .iter()
-                    .map(|(n, vars)| vars)
+                    .map(|(_, vars)| vars)
                     .multi_cartesian_product()
                     .map(|vars| kw.clone().zip(vars).collect())
                     .collect();
@@ -231,10 +237,14 @@ impl FunctionAnalysis {
                 }
                 _ => Ok(HashSet::from_iter(vec![Variable::Top])),
             },
-            ExprKind::Path(p) => Ok(domain
-                .get(p)
-                .unwrap_or(&HashSet::from_iter(vec![Variable::Top]))
-                .clone()),
+            ExprKind::Path(p) => {
+                // TODO: handle indexing
+
+                Ok(domain
+                    .get(p)
+                    .unwrap_or(&HashSet::from_iter(vec![Variable::Top]))
+                    .clone())
+            }
             ExprKind::Slice { receiver, slice } => todo!(),
         }
     }

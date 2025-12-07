@@ -185,3 +185,18 @@ impl Model for MatmulModel {
         }
     }
 }
+
+struct EltwiseModel {}
+static ELTWISE_SIGNATURE: LazyLock<Signature> = LazyLock::new(|| vec![("input".to_string(), None)]);
+
+// The base model for functions that do an element wise operation, preserving shape
+// This should be fine for most activation like functions
+impl Model for EltwiseModel {
+    fn infer(&self, args: Vec<&Variable>, kwargs: HashMap<String, &Variable>) -> Result<Shape> {
+        let args = resolve_args(args, kwargs, ELTWISE_SIGNATURE.iter().cloned());
+        let (input_shape, other_shape) = get_args!(args, Matmul,
+            input: as_shape_dims => "Tensor",
+            other: as_shape_dims => "Tensor",
+        )?;
+    }
+}

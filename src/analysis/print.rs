@@ -29,6 +29,7 @@ impl fmt::Display for Variable {
             Variable::Top => write!(f, "⟙"),
             Variable::DimVar(dim_var) => write!(f, "{}", dim_var),
             Variable::Tensor(shape) => write!(f, "{}", shape),
+            Variable::Tuple(vars) => write_comma_separated(f, vars),
         }
     }
 }
