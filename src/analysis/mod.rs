@@ -188,7 +188,7 @@ impl FunctionAnalysis {
                         (Variable::DimVar(l_dvar), Variable::DimVar(r_dvar)) => {
                             self.fold_dimvars(l_dvar, r_dvar, *op)
                         }
-                        (Variable::Tuple(_), _) | (_, Variable::Tuple(_)) => {
+                        _ => {
                             panic!("runtime error")
                         }
                     };

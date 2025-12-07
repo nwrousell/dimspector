@@ -2,9 +2,10 @@ use core::panic;
 use std::{collections::HashMap, sync::LazyLock};
 
 use anyhow::{Result, anyhow};
+use itertools::Itertools;
 use num_traits::sign;
 
-use crate::analysis::{DimVar, Shape, Variable};
+use crate::analysis::{DimKind, DimVar, Shape, Variable};
 
 macro_rules! get_args {
     ($args:expr, $model_name:ident, $( $param:ident : $method:ident => $type_name:expr ),+ $(,)?) => {
@@ -35,13 +36,69 @@ pub trait Model {
 }
 
 impl ModelContext {
-    pub fn resolve_torch_model(&self, path: &str) -> Option<impl Model> {
+    pub fn resolve_torch_model(&self, path: &str) -> Option<Box<dyn Model>> {
         match path {
-            path if path == "torch.matmul" => Some(MatmulModel),
+            "torch.matmul" => Some(Box::new(MatmulModel)),
+            "torch.abs"
+            | "torch.acos"
+            | "torch.acosh"
+            | "torch.asin"
+            | "torch.asinh"
+            | "torch.atan"
+            | "torch.atanh"
+            | "torch.ceil"
+            | "torch.cos"
+            | "torch.cosh"
+            | "torch.erf"
+            | "torch.erfc"
+            | "torch.exp"
+            | "torch.expm1"
+            | "torch.floor"
+            | "torch.frac"
+            | "torch.isfinite"
+            | "torch.isinf"
+            | "torch.isnan"
+            | "torch.log"
+            | "torch.log10"
+            | "torch.log1p"
+            | "torch.log2"
+            | "torch.neg"
+            | "torch.reciprocal"
+            | "torch.round"
+            | "torch.rsqrt"
+            | "torch.sigmoid"
+            | "torch.sign"
+            | "torch.sin"
+            | "torch.sinh"
+            | "torch.sqrt"
+            | "torch.square"
+            | "torch.tan"
+            | "torch.tanh"
+            | "torch.trunc"
+            | "torch.nn.functional.relu"
+            | "torch.nn.functional.relu6"
+            | "torch.nn.functional.leaky_relu"
+            | "torch.nn.functional.elu"
+            | "torch.nn.functional.celu"
+            | "torch.nn.functional.gelu"
+            | "torch.nn.functional.silu"
+            | "torch.nn.functional.hardtanh"
+            | "torch.nn.functional.hardshrink"
+            | "torch.nn.functional.softshrink"
+            | "torch.nn.functional.mish"
+            | "torch.special.expit"
+            | "torch.special.erf"
+            | "torch.special.erfc"
+            | "torch.special.ndtr"
+            | "torch.special.ndtri"
+            | "torch.special.logit"
+            | "torch.special.digamma" => Some(Box::new(EltwiseModel)),
+            "torch.sum" => Some(Box::new(RdxModel)),
             _ => None,
         }
     }
-    pub fn resolve(&self, path: &str) -> Option<impl Model> {
+
+    pub fn resolve(&self, path: &str) -> Option<Box<dyn Model>> {
         self.resolve_torch_model(path)
 
         // can handle user models here later
@@ -72,6 +129,8 @@ pub fn resolve_args(
     mapping
 }
 
+#[derive(Clone)]
+struct DefaultNone;
 type Signature = Vec<(String, Option<Variable>)>;
 
 struct MatmulModel;
@@ -186,7 +245,7 @@ impl Model for MatmulModel {
     }
 }
 
-struct EltwiseModel {}
+struct EltwiseModel;
 static ELTWISE_SIGNATURE: LazyLock<Signature> = LazyLock::new(|| vec![("input".to_string(), None)]);
 
 // The base model for functions that do an element wise operation, preserving shape
@@ -194,10 +253,62 @@ static ELTWISE_SIGNATURE: LazyLock<Signature> = LazyLock::new(|| vec![("input".t
 impl Model for EltwiseModel {
     fn infer(&self, args: Vec<&Variable>, kwargs: HashMap<String, &Variable>) -> Result<Shape> {
         let args = resolve_args(args, kwargs, ELTWISE_SIGNATURE.iter().cloned());
-        let (input_shape, other_shape) = get_args!(args, Matmul,
-            input: as_shape_dims => "Tensor",
-            other: as_shape_dims => "Tensor",
+        let input_shape = get_args!(args, Eltwise,
+            input: as_shape => "Tensor",
         )?;
-        todo!()
+
+        Ok(input_shape)
+    }
+}
+
+struct RdxModel;
+static RDX_SIGNATURE: LazyLock<Signature> = LazyLock::new(|| {
+    vec![
+        ("input".to_string(), None),
+        ("dim".to_string(), Some(Variable::None)),
+        ("keepdim".to_string(), Some(Variable::None)), // TODO: handle this, default = False
+    ]
+});
+
+impl Model for RdxModel {
+    fn infer(&self, args: Vec<&Variable>, kwargs: HashMap<String, &Variable>) -> Result<Shape> {
+        let args = resolve_args(args, kwargs, RDX_SIGNATURE.iter().cloned());
+        let input_shape = get_args!(args, Matmul,
+            input: as_shape_dims => "Tensor",
+        )?;
+        let rdx_dims = args.get("dim").unwrap(); // bad?
+
+        let result_dims = match rdx_dims {
+            Variable::DimVar(DimVar {
+                kind: DimKind::Concrete(dim),
+            }) => match dim {
+                -1 => input_shape[..input_shape.len() - 1].to_vec(),
+                dim if 0 <= *dim && *dim < input_shape.len() as i64 => {
+                    let mut res = input_shape.clone();
+                    res.remove(*dim as usize);
+                    res
+                }
+                _ => todo!(),
+            },
+            Variable::Tuple(vars) => {
+                let mut vars_conc = vars.iter().map(|var| {
+                    let Variable::DimVar(DimVar {
+                        kind: DimKind::Concrete(v),
+                    }) = var
+                    else {
+                        unreachable!("rdx dims should be concrete")
+                    };
+                    v
+                });
+                input_shape
+                    .into_iter()
+                    .enumerate()
+                    .filter_map(|(i, x)| (!vars_conc.contains(&(i as i64))).then_some(x))
+                    .collect()
+            }
+            _ => todo!(),
+        };
+
+        Ok(Shape(result_dims))
     }
 }

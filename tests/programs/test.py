@@ -34,6 +34,14 @@ def scalar_multiply(a: T["batch dim"], scalar: float):
     c = a * scalar
     return c
 
+def relu(x: T["b c h w"]):
+    z = torch.nn.functional.relu(x)
+    return z
+
+def rdx_sum(x: T["b d"]):
+    z = torch.sum(x, dim=0)
+    return z
+
 
 # def broadcast_dim1(a: T["batch 1 dim"], b: T["batch dim"]):
 #     c = a + b
