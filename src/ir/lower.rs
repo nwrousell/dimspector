@@ -1,7 +1,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use anyhow::Result;
-use itertools::Itertools;
+use itertools::{Either, Itertools};
 use petgraph::{
     graph::NodeIndex,
     visit::{Dfs, EdgeRef, Walker},
@@ -11,14 +11,14 @@ use rustpython_parser::{
         Expr as ASTExpr, ExprAttribute, ExprBinOp, ExprCall, ExprCompare, ExprConstant, ExprName,
         ExprSlice, ExprSubscript, ExprTuple, ExprUnaryOp, Keyword, Stmt as ASTStmt, StmtAssign,
         StmtAugAssign, StmtExpr, StmtFor, StmtFunctionDef as ASTFunction, StmtIf, StmtReturn,
-        StmtWhile,
+        StmtWhile, UnaryOp,
     },
     text_size::TextRange,
 };
 
 use crate::{
     analysis::DimVar,
-    ir::types::{Binop, Constant, Function},
+    ir::types::{Binop, Constant, DimRange, ExprKind, Function, Slice},
 };
 use crate::{
     analysis::{Shape, Variable},
@@ -374,6 +374,41 @@ impl LowerBody {
         Ok(())
     }
 
+    fn lower_expr_to_slice(&mut self, expr_slice: ExprSlice) -> Result<Slice> {
+        let lower = match &expr_slice.lower {
+            Some(expr_lower) => Some(self.lower_expr_to_expr(*expr_lower.clone())?),
+            None => None,
+        };
+        let upper = match &expr_slice.upper {
+            Some(expr_upper) => Some(self.lower_expr_to_expr(*expr_upper.clone())?),
+            None => None,
+        };
+
+        Ok(Slice { lower, upper })
+    }
+
+    fn lower_expr_to_index(&mut self, expr: ASTExpr) -> Result<Vec<Either<Expr, Slice>>> {
+        Ok(match expr {
+            ASTExpr::Slice(expr_slice) => {
+                vec![Either::Right(self.lower_expr_to_slice(expr_slice)?)]
+            }
+            ASTExpr::Tuple(expr_tuple) => {
+                let mut res = Vec::new();
+                for elt in expr_tuple.elts {
+                    res.push(match elt {
+                        ASTExpr::Slice(expr_slice) => {
+                            Either::Right(self.lower_expr_to_slice(expr_slice)?)
+                        }
+                        _ => Either::Left(self.lower_expr_to_expr(elt)?),
+                    })
+                }
+
+                res
+            }
+            _ => vec![Either::Left(self.lower_expr_to_expr(expr)?)],
+        })
+    }
+
     fn lower_expr_to_expr(&mut self, expr: ASTExpr) -> Result<Expr> {
         match expr {
             ASTExpr::Name(ExprName { id, range, .. }) => {
@@ -455,7 +490,16 @@ impl LowerBody {
                 path.push(attr.to_string());
                 Ok(Expr::path(Path::new(&path), range))
             }
-            ASTExpr::UnaryOp(ExprUnaryOp { operand, .. }) => self.lower_expr_to_expr(*operand),
+            ASTExpr::UnaryOp(ExprUnaryOp { operand, op, .. }) => {
+                let operand = self.lower_expr_to_expr(*operand)?;
+                match (op, &operand.kind) {
+                    (UnaryOp::USub, ExprKind::Constant(c)) => Ok(Expr {
+                        kind: ExprKind::Constant(c.negate_if_num().unwrap()),
+                        range: operand.range,
+                    }),
+                    _ => Ok(operand),
+                }
+            }
             ASTExpr::Compare(ExprCompare {
                 comparators,
                 left,
@@ -489,7 +533,18 @@ impl LowerBody {
                     .collect::<Result<Vec<Expr>>>()?;
                 Ok(Expr::tuple(elts, range))
             }
-            ASTExpr::Slice(expr_slice) => todo!(),
+            ASTExpr::Slice(expr_slice) => {
+                unreachable!();
+                // let expr_lower = match &expr_slice.lower {
+                //     Some(expr_lower) => Some(self.lower_expr_to_expr(*expr_lower.clone())?),
+                //     None => None,
+                // };
+                // let expr_upper = match &expr_slice.upper {
+                //     Some(expr_upper) => Some(self.lower_expr_to_expr(*expr_upper.clone())?),
+                //     None => None,
+                // };
+                // Ok(Expr::slice(expr_lower, expr_upper, expr_slice.range))
+            }
             ASTExpr::Subscript(ExprSubscript {
                 value,
                 slice,
@@ -497,7 +552,7 @@ impl LowerBody {
                 ..
             }) => {
                 let expr = self.lower_expr_to_expr(*value)?;
-                let index = self.lower_expr_to_expr(*slice)?;
+                let index = self.lower_expr_to_index(*slice)?;
 
                 Ok(Expr::index(range, expr, index))
             }

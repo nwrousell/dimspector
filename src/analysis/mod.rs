@@ -5,6 +5,7 @@ mod print;
 mod types;
 
 use std::collections::{HashMap, HashSet};
+use std::fs::write;
 use std::rc::Rc;
 
 use itertools::{Either, Itertools};
@@ -12,8 +13,9 @@ pub use types::{Shape, Variable};
 
 pub use crate::analysis::dimvars::{DimKind, DimVar};
 use crate::analysis::models::{Model, ModelContext};
-use crate::ir::types::{Binop, Constant, ExprKind, Location};
-use crate::ir::{Expr, Parameter, Path, Statement, Terminator};
+use crate::analysis::types::DimSlice;
+use crate::ir::types::{Binop, Constant, ExprKind, Location, Slice};
+use crate::ir::{self, Expr, Parameter, Path, Statement, Terminator};
 use crate::ir::{Function, Program};
 use anyhow::Result;
 type AnalysisDomain = HashMap<Path, HashSet<Variable>>;
@@ -226,9 +228,7 @@ impl FunctionAnalysis {
                             let shape_dims: Vec<_> =
                                 vars.iter().filter_map(|v| v.as_shape_dims()).collect();
                             let tuples = shape_dims.into_iter().map(|ds| {
-                                Variable::Tuple(
-                                    ds.into_iter().map(|d| Variable::DimVar(d)).collect(),
-                                )
+                                Variable::Tuple(ds.into_iter().map(Variable::DimVar).collect())
                             });
                             let set = HashSet::from_iter(tuples);
 
@@ -243,32 +243,113 @@ impl FunctionAnalysis {
                     .unwrap_or(&HashSet::from_iter([Variable::Top]))
                     .clone())
             }
-            ExprKind::Slice { receiver, slice } => todo!(),
-            ExprKind::Index { expr, index } => {
-                let vars = self.eval_expr(domain, expr)?;
-                let indices = self.eval_expr(domain, index)?;
+            ExprKind::Index { receiver, index } => {
+                // TODO:
+                // - parse None dims i.e. x[None,:]
+                let vars = self.eval_expr(domain, receiver)?;
+                let indices: Vec<HashSet<Either<Variable, DimSlice>>> = index
+                    .iter()
+                    .map(|v| -> Result<HashSet<Either<Variable, DimSlice>>> {
+                        Ok(match v {
+                            Either::Left(l) => self
+                                .eval_expr(domain, l)?
+                                .into_iter()
+                                .map(Either::Left)
+                                .collect::<HashSet<_>>(),
+                            Either::Right(Slice { lower, upper }) => {
+                                let lowers = match lower {
+                                    Some(expr_lower) => Some(self.eval_expr(domain, expr_lower)?),
+                                    None => None,
+                                };
+                                let uppers = match upper {
+                                    Some(expr_upper) => Some(self.eval_expr(domain, expr_upper)?),
+                                    None => None,
+                                };
+
+                                match (lowers, uppers) {
+                                    (Some(lowers), Some(uppers)) => lowers
+                                        .iter()
+                                        .cartesian_product(uppers.iter())
+                                        .map(|(l, u)| {
+                                            Either::Right(DimSlice {
+                                                lower: Some(l.clone()),
+                                                upper: Some(u.clone()),
+                                            })
+                                        })
+                                        .collect::<HashSet<_>>(),
+                                    (Some(lowers), None) => lowers
+                                        .into_iter()
+                                        .map(|l| {
+                                            Either::Right(DimSlice {
+                                                lower: Some(l),
+                                                upper: None,
+                                            })
+                                        })
+                                        .collect::<HashSet<_>>(),
+                                    (None, Some(uppers)) => uppers
+                                        .into_iter()
+                                        .map(|u| {
+                                            Either::Right(DimSlice {
+                                                lower: None,
+                                                upper: Some(u),
+                                            })
+                                        })
+                                        .collect::<HashSet<_>>(),
+                                    (None, None) => vec![Either::Right(DimSlice {
+                                        lower: None,
+                                        upper: None,
+                                    })]
+                                    .into_iter()
+                                    .collect::<HashSet<_>>(),
+                                }
+                            }
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?;
 
                 let mut set = HashSet::new();
-                for (var, index) in vars.iter().cartesian_product(indices.iter()) {
-                    println!("{:?}, {:?}", var, index);
-                    let var = match (var, index) {
-                        // in the case where we know the tensor but not the index, we could technically do a union over the DimVars
-                        (Variable::Top, _) | (_, Variable::Top) => Variable::Top,
+                for (var, index) in vars
+                    .iter()
+                    .cartesian_product(indices.iter().multi_cartesian_product())
+                {
+                    let Variable::Tensor(Shape(dims)) = var else {
+                        continue; // TODO: valid?
+                    };
+                    let mut out_dims = Vec::new();
 
-                        (Variable::Tuple(elts), Variable::DimVar(d)) => {
-                            if let DimKind::Concrete(c) = d.kind() {
-                                match elts.get(c as usize) {
-                                    Some(v) => v.clone(),
-                                    None => Variable::Top,
-                                }
-                            } else {
-                                Variable::Top
+                    for (i, dim) in index.iter().enumerate() {
+                        match dim {
+                            // TODO: actually parse this, assuming it's a dimvar right now
+                            Either::Left(_v) => continue,
+                            Either::Right(DimSlice { lower, upper }) => {
+                                let l_bound = match lower {
+                                    Some(Variable::DimVar(dvar)) => dvar.clone(),
+                                    None => DimVar {
+                                        kind: DimKind::Concrete(0),
+                                    },
+                                    _ => unreachable!("bad lower bound"),
+                                };
+                                let u_bound = match upper {
+                                    Some(Variable::DimVar(dvar)) => match dvar.kind() {
+                                        DimKind::Concrete(n) => {
+                                            if n < 0 {
+                                                dims[i].clone() + n.into()
+                                            } else {
+                                                dvar.clone()
+                                            }
+                                        }
+                                        _ => dvar.clone(),
+                                    },
+                                    None => dims[i].clone(),
+                                    _ => unreachable!("bad upper bound"),
+                                };
+
+                                out_dims.push(u_bound - l_bound)
                             }
                         }
-                        _ => Variable::Top,
-                    };
+                    }
 
-                    set.insert(var);
+                    set.insert(Variable::Tensor(Shape(out_dims)));
                 }
 
                 Ok(set)

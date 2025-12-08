@@ -1,6 +1,8 @@
 use core::fmt;
 
-use crate::ir::types::{Constant, DimRange, Location};
+use itertools::Either;
+
+use crate::ir::types::{Constant, DimRange, Location, Slice};
 use crate::utils::{indent, write_comma_separated};
 
 use crate::ir::{
@@ -73,11 +75,6 @@ impl fmt::Display for Expr {
         match &self.kind {
             ExprKind::Path(path) => write!(f, "{}", path),
             ExprKind::Constant(constant) => write!(f, "{}", constant),
-            ExprKind::Slice { receiver, slice } => {
-                write!(f, "{}[", receiver)?;
-                write_comma_separated(f, slice)?;
-                write!(f, "]")
-            }
             ExprKind::Binop { left, right, op } => {
                 write!(f, "{} {} {}", left, op, right)
             }
@@ -112,8 +109,10 @@ impl fmt::Display for Expr {
 
                 write!(f, ")")
             }
-            ExprKind::Index { expr, index } => {
-                write!(f, "{}[{}]", expr, index)
+            ExprKind::Index { receiver, index } => {
+                write!(f, "{}[", receiver);
+                write_comma_separated(f, index);
+                write!(f, "]")
             }
             ExprKind::Tuple(exprs) => {
                 write!(f, "(")?;
@@ -244,5 +243,22 @@ impl fmt::Display for Binop {
             Binop::BitXor => write!(f, "^"),
             Binop::BitAnd => write!(f, "&"),
         }
+    }
+}
+
+impl fmt::Display for Slice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}:{}",
+            self.lower
+                .as_ref()
+                .map(|v| v.to_string())
+                .unwrap_or_default(),
+            self.upper
+                .as_ref()
+                .map(|v| v.to_string())
+                .unwrap_or_default(),
+        )
     }
 }

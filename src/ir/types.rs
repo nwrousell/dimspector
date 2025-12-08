@@ -284,21 +284,32 @@ impl Expr {
         }
     }
 
-    pub fn index(range: TextRange, expr: Expr, index: Expr) -> Expr {
+    pub fn index(range: TextRange, expr: Expr, index: Vec<Either<Expr, Slice>>) -> Expr {
         Expr {
             kind: ExprKind::Index {
-                expr: Box::new(expr),
-                index: Box::new(index),
+                receiver: Box::new(expr),
+                index,
             },
             range,
         }
     }
+
     pub fn tuple(elts: Vec<Expr>, range: TextRange) -> Expr {
         Expr {
             kind: ExprKind::Tuple(elts),
             range,
         }
     }
+
+    // pub fn slice(lower: Option<Expr>, upper: Option<Expr>, range: TextRange) -> Expr {
+    //     Expr {
+    //         kind: ExprKind::Slice {
+    //             lower: lower.map(Box::new),
+    //             upper: upper.map(Box::new),
+    //         },
+    //         range,
+    //     }
+    // }
 }
 
 #[derive(Clone, Debug)]
@@ -308,6 +319,16 @@ pub enum Constant {
     Str(String),
     Int(i64),
     Float(f64),
+}
+
+impl Constant {
+    pub fn negate_if_num(&self) -> Option<Self> {
+        match self {
+            Constant::Int(n) => Some(Constant::Int(-n)),
+            Constant::Float(n) => Some(Constant::Float(-n)),
+            _ => None,
+        }
+    }
 }
 
 impl From<ASTConstant> for Constant {
@@ -415,15 +436,17 @@ pub enum ExprKind {
     },
     Constant(Constant),
     Path(Path),
-    Index {
-        expr: Box<Expr>,
-        index: Box<Expr>,
-    },
     Tuple(Vec<Expr>),
-    Slice {
-        receiver: Path,
-        slice: Vec<DimRange>,
+    Index {
+        receiver: Box<Expr>,
+        index: Vec<Either<Expr, Slice>>,
     },
+}
+
+#[derive(Clone, Debug)]
+pub struct Slice {
+    pub lower: Option<Expr>,
+    pub upper: Option<Expr>,
 }
 
 #[derive(Clone, Debug)]

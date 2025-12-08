@@ -93,3 +93,9 @@ impl Shape {
         Self(dims)
     }
 }
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct DimSlice {
+    pub lower: Option<Variable>,
+    pub upper: Option<Variable>,
+}
