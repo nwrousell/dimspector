@@ -1,7 +1,5 @@
 use core::fmt;
 
-use itertools::Either;
-
 use crate::ir::types::{Constant, DimRange, Location, Slice};
 use crate::utils::{indent, write_comma_separated};
 
@@ -110,8 +108,8 @@ impl fmt::Display for Expr {
                 write!(f, ")")
             }
             ExprKind::Index { receiver, index } => {
-                write!(f, "{}[", receiver);
-                write_comma_separated(f, index);
+                write!(f, "{}[", receiver)?;
+                write_comma_separated(f, index)?;
                 write!(f, "]")
             }
             ExprKind::Tuple(exprs) => {

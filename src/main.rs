@@ -1,5 +1,8 @@
 use clap::Parser;
-use torch_infer2::analysis::{analyze, print_ir_with_inferred_shapes};
+use dimspector::{
+    analysis::{analyze, print_ir_with_inferred_shapes},
+    ast, ir,
+};
 // use miette::{MietteHandlerOpts, Result};
 use std::path::PathBuf;
 
@@ -29,12 +32,12 @@ fn main() -> Result<()> {
 }
 
 fn run(file: PathBuf) -> Result<()> {
-    let input = torch_infer2::ast::read(&file)?;
+    let input = ast::read(&file)?;
 
-    let program = torch_infer2::ast::parse(&input)?;
+    let program = ast::parse(&input)?;
     // log::debug!("AST:\n{}", program);
 
-    let ir = torch_infer2::ir::lower(program)?;
+    let ir = ir::lower(program)?;
     log::debug!("IR:\n{}", ir);
 
     // println!("IR full:\n{:#?}", ir);

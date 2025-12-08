@@ -5,7 +5,6 @@ mod print;
 mod types;
 
 use std::collections::{HashMap, HashSet};
-use std::fs::write;
 use std::rc::Rc;
 
 use itertools::{Either, Itertools};
@@ -15,7 +14,7 @@ pub use crate::analysis::dimvars::{DimKind, DimVar};
 use crate::analysis::models::{Model, ModelContext};
 use crate::analysis::types::DimSlice;
 use crate::ir::types::{Binop, Constant, ExprKind, Location, Slice};
-use crate::ir::{self, Expr, Parameter, Path, Statement, Terminator};
+use crate::ir::{Expr, Parameter, Path, Statement, Terminator};
 use crate::ir::{Function, Program};
 use anyhow::Result;
 type AnalysisDomain = HashMap<Path, HashSet<Variable>>;
@@ -61,8 +60,6 @@ impl GlobalAnalysis {
 }
 
 pub struct FunctionAnalysis {
-    // func: StmtFunctionDef,
-    // func: Function,
     // TODO: currently just using Hash{Set,Map}s, but would benefit perhaps
     // from using bitsets, if the speedup is worth it
     pub id: Path,
@@ -100,64 +97,68 @@ impl FunctionAnalysis {
         }
     }
 
-    fn eval_expr(&mut self, domain: &AnalysisDomain, expr: &Expr) -> Result<HashSet<Variable>> {
-        // TODO:
-        // - flows of dimvars out of .shape or .size()
-        // - reshapes, rearranges
-        // - pytorch stub representation (in IR)
-        match &expr.kind {
-            ExprKind::Binop { left, right, op } => {
-                let l_vars = self.eval_expr(domain, left)?;
-                let r_vars = self.eval_expr(domain, right)?;
+    fn eval_binop(
+        &mut self,
+        domain: &AnalysisDomain,
+        left: &Expr,
+        right: &Expr,
+        op: Binop,
+    ) -> Result<HashSet<Variable>> {
+        let l_vars = self.eval_expr(domain, left)?;
+        let r_vars = self.eval_expr(domain, right)?;
 
-                let mut out_vars = HashSet::new();
+        let mut out_vars = HashSet::new();
 
-                let is_matmul = matches!(op, Binop::MatMult);
+        let is_matmul = matches!(op, Binop::MatMult);
 
-                for (l_var, r_var) in l_vars.iter().cartesian_product(r_vars.iter()) {
-                    let out_var = match (l_var, r_var) {
-                        (Variable::Top, _) | (_, Variable::Top) => Variable::Top,
-                        (Variable::Tensor(_), Variable::Tensor(_)) => {
-                            if is_matmul {
-                                let out_shape = self
-                                    .models
-                                    .torch
-                                    .matmul
-                                    .infer(vec![l_var, r_var], HashMap::new())?;
-                                Variable::Tensor(out_shape)
-                            } else {
-                                let out_shape = self
-                                    .models
-                                    .torch
-                                    .broadcast
-                                    .infer(vec![l_var, r_var], HashMap::new())?;
-                                Variable::Tensor(out_shape)
-                            }
-                        }
-                        (Variable::Tensor(shape), _) | (_, Variable::Tensor(shape)) => {
-                            // other should be some number, will retain tensor operand shape
-                            Variable::Tensor(shape.clone())
-                        }
-                        (Variable::Tuple(l_vars), Variable::Tuple(r_vars)) => match op {
-                            Binop::Add => {
-                                let mut out = l_vars.clone();
-                                out.extend(r_vars.iter().cloned());
-                                Variable::Tuple(out)
-                            }
-                            _ => Variable::Top,
-                        },
-                        (Variable::DimVar(l_dvar), Variable::DimVar(r_dvar)) => {
-                            self.fold_dimvars(l_dvar.clone(), r_dvar.clone(), *op)
-                        }
-                        _ => {
-                            panic!("runtime error")
-                        }
-                    };
-
-                    out_vars.insert(out_var);
+        for (l_var, r_var) in l_vars.iter().cartesian_product(r_vars.iter()) {
+            let out_var = match (l_var, r_var) {
+                (Variable::Top, _) | (_, Variable::Top) => Variable::Top,
+                (Variable::Tensor(_), Variable::Tensor(_)) => {
+                    if is_matmul {
+                        let out_shape = self
+                            .models
+                            .torch
+                            .matmul
+                            .infer(vec![l_var, r_var], HashMap::new())?;
+                        Variable::Tensor(out_shape)
+                    } else {
+                        let out_shape = self
+                            .models
+                            .torch
+                            .broadcast
+                            .infer(vec![l_var, r_var], HashMap::new())?;
+                        Variable::Tensor(out_shape)
+                    }
                 }
-                Ok(out_vars)
-            }
+                (Variable::Tensor(shape), _) | (_, Variable::Tensor(shape)) => {
+                    // other should be some number, will retain tensor operand shape
+                    Variable::Tensor(shape.clone())
+                }
+                (Variable::Tuple(l_vars), Variable::Tuple(r_vars)) => match op {
+                    Binop::Add => {
+                        let mut out = l_vars.clone();
+                        out.extend(r_vars.iter().cloned());
+                        Variable::Tuple(out)
+                    }
+                    _ => Variable::Top,
+                },
+                (Variable::DimVar(l_dvar), Variable::DimVar(r_dvar)) => {
+                    self.fold_dimvars(l_dvar.clone(), r_dvar.clone(), op)
+                }
+                _ => {
+                    panic!("runtime error")
+                }
+            };
+
+            out_vars.insert(out_var);
+        }
+        Ok(out_vars)
+    }
+
+    fn eval_expr(&mut self, domain: &AnalysisDomain, expr: &Expr) -> Result<HashSet<Variable>> {
+        match &expr.kind {
+            ExprKind::Binop { left, right, op } => self.eval_binop(domain, left, right, *op),
             ExprKind::Call {
                 receiver,
                 function,
@@ -222,7 +223,7 @@ impl FunctionAnalysis {
             },
             ExprKind::Path(p) => {
                 if p.parts().last().unwrap() == "shape" {
-                    let prefix = Path::new(&p.parts()[0..(p.parts().len() - 1)]);
+                    let prefix: Path = Path::new(&p.parts()[0..(p.parts().len() - 1)]);
                     return match domain.get(&prefix) {
                         Some(vars) => {
                             let shape_dims: Vec<_> =
@@ -231,7 +232,6 @@ impl FunctionAnalysis {
                                 Variable::Tuple(ds.into_iter().map(Variable::DimVar).collect())
                             });
                             let set = HashSet::from_iter(tuples);
-
                             Ok(set)
                         }
                         None => Ok(HashSet::from_iter([Variable::Top])),
@@ -312,44 +312,85 @@ impl FunctionAnalysis {
                     .iter()
                     .cartesian_product(indices.iter().multi_cartesian_product())
                 {
-                    let Variable::Tensor(Shape(dims)) = var else {
-                        continue; // TODO: valid?
-                    };
-                    let mut out_dims = Vec::new();
+                    match var {
+                        Variable::Tensor(Shape(dims)) => {
+                            let mut out_dims = Vec::new();
 
-                    for (i, dim) in index.iter().enumerate() {
-                        match dim {
-                            // TODO: actually parse this, assuming it's a dimvar right now
-                            Either::Left(_v) => continue,
-                            Either::Right(DimSlice { lower, upper }) => {
-                                let l_bound = match lower {
-                                    Some(Variable::DimVar(dvar)) => dvar.clone(),
-                                    None => DimVar {
-                                        kind: DimKind::Concrete(0),
-                                    },
-                                    _ => unreachable!("bad lower bound"),
-                                };
-                                let u_bound = match upper {
-                                    Some(Variable::DimVar(dvar)) => match dvar.kind() {
-                                        DimKind::Concrete(n) => {
-                                            if n < 0 {
-                                                dims[i].clone() + n.into()
-                                            } else {
-                                                dvar.clone()
-                                            }
+                            for (i, dim) in index.iter().enumerate() {
+                                match dim {
+                                    // TODO: actually parse this, assuming it's a dimvar right now
+                                    Either::Left(_v) => continue,
+                                    Either::Right(DimSlice { lower, upper }) => {
+                                        let l_bound = match lower {
+                                            Some(Variable::DimVar(dvar)) => dvar.clone(),
+                                            None => DimVar {
+                                                kind: DimKind::Concrete(0),
+                                            },
+                                            _ => unreachable!("bad lower bound"),
+                                        };
+                                        let u_bound = match upper {
+                                            Some(Variable::DimVar(dvar)) => match dvar.kind() {
+                                                DimKind::Concrete(n) => {
+                                                    if n < 0 {
+                                                        dims[i].clone() + n.into()
+                                                    } else {
+                                                        dvar.clone()
+                                                    }
+                                                }
+                                                _ => dvar.clone(),
+                                            },
+                                            None => dims[i].clone(),
+                                            _ => unreachable!("bad upper bound"),
+                                        };
+
+                                        out_dims.push(u_bound - l_bound)
+                                    }
+                                }
+                            }
+
+                            set.insert(Variable::Tensor(Shape(out_dims)));
+                        }
+                        Variable::Tuple(elts) => {
+                            assert!(index.len() == 1);
+                            match index.first().unwrap() {
+                                Either::Left(var) => {
+                                    if let Some(c) = var.as_concrete_dimvar() {
+                                        set.insert(elts.get(c as usize).unwrap().clone());
+                                    } else {
+                                        set.insert(Variable::Top);
+                                    }
+                                }
+                                Either::Right(DimSlice { lower, upper }) => {
+                                    let lower = if let Some(l) = lower {
+                                        l.as_concrete_dimvar().map(|c| c as usize)
+                                    } else {
+                                        Some(0)
+                                    };
+
+                                    let upper = if let Some(u) = upper {
+                                        u.as_concrete_dimvar().map(|c| c as usize)
+                                    } else {
+                                        Some(elts.len())
+                                    };
+
+                                    match (lower, upper) {
+                                        (Some(l), Some(u)) => {
+                                            let tuple = Variable::Tuple(elts[l..u].to_vec());
+                                            set.insert(tuple);
                                         }
-                                        _ => dvar.clone(),
-                                    },
-                                    None => dims[i].clone(),
-                                    _ => unreachable!("bad upper bound"),
-                                };
-
-                                out_dims.push(u_bound - l_bound)
+                                        _ => {
+                                            set.insert(Variable::Top);
+                                        }
+                                    }
+                                }
                             }
                         }
+                        Variable::Top => {
+                            set.insert(Variable::Top);
+                        }
+                        Variable::DimVar(_) => (),
+                        Variable::None => (),
                     }
-
-                    set.insert(Variable::Tensor(Shape(out_dims)));
                 }
 
                 Ok(set)

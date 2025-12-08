@@ -1,7 +1,10 @@
 use std::path::Path;
 
 use anyhow::Result;
-use torch_infer2::analysis::{self, ir_with_inferred_shapes_to_string};
+use dimspector::{
+    analysis::{self, ir_with_inferred_shapes_to_string},
+    ast, ir,
+};
 use walkdir::WalkDir;
 
 fn run_snapshot_test<F>(suffix: &str, process: F) -> Result<()>
@@ -45,17 +48,17 @@ where
 }
 
 fn lower_to_ir_string(path: &Path) -> Result<String> {
-    let input = torch_infer2::ast::read(path)?;
-    let program = torch_infer2::ast::parse(&input)?;
-    let ir = torch_infer2::ir::lower(program)?;
+    let input = ast::read(path)?;
+    let program = ast::parse(&input)?;
+    let ir = ir::lower(program)?;
     Ok(format!("{}", ir))
 }
 
 fn analyze(path: &Path) -> Result<String> {
     let run = || -> Result<String> {
-        let input = torch_infer2::ast::read(path)?;
-        let program = torch_infer2::ast::parse(&input)?;
-        let ir = torch_infer2::ir::lower(program)?;
+        let input = ast::read(path)?;
+        let program = ast::parse(&input)?;
+        let ir = ir::lower(program)?;
 
         match analysis::analyze(ir.clone()) {
             Ok(res) => {

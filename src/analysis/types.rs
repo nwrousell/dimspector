@@ -70,6 +70,17 @@ impl Variable {
             Variable::None => None,
         }
     }
+
+    pub fn as_concrete_dimvar(&self) -> Option<i64> {
+        if let Some(dimvar) = self.as_dimvar() {
+            match dimvar.kind() {
+                DimKind::Concrete(c) => Some(c),
+                _ => None,
+            }
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
