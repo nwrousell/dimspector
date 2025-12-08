@@ -13,6 +13,9 @@ pub enum ShapeError {
         // #[label("mismatch occurs here")]
         // span: SourceSpan,
     },
+
+    #[error("Can't infer return shape")]
+    UninferrableCall {},
 }
 
 impl ShapeError {

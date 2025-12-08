@@ -58,6 +58,7 @@ pub struct Function {
     pub identifier: Path,
     pub cfg: Cfg,
     pub params: Vec<Parameter>,
+    pub returns: Option<Vec<Variable>>,
     pub locations: Vec<Location>,
     pub rpo: Vec<BasicBlockIdx>,
 }
@@ -72,7 +73,12 @@ impl Parameter {
 }
 
 impl Function {
-    pub fn new(identifier: Path, cfg: Cfg, params: Vec<(Path, Option<Variable>)>) -> Function {
+    pub fn new(
+        identifier: Path,
+        cfg: Cfg,
+        params: Vec<(Path, Option<Variable>)>,
+        returns: Option<Vec<Variable>>,
+    ) -> Function {
         let rpo: Vec<BasicBlockIdx> = utils::reverse_post_order(&cfg, 0.into())
             .into_iter()
             .map(BasicBlockIdx::from)
@@ -98,6 +104,7 @@ impl Function {
             locations,
             rpo,
             params,
+            returns,
         }
     }
 

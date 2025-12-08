@@ -43,10 +43,10 @@ pub struct GlobalAnalysis {
 }
 
 impl GlobalAnalysis {
-    pub fn new() -> Self {
+    pub fn new(funcs: &Vec<Function>) -> Self {
         Self {
             functions: HashMap::new(),
-            models: Rc::new(ModelContext::new()),
+            models: Rc::new(ModelContext::new(funcs)),
         }
     }
 
@@ -429,15 +429,15 @@ impl FunctionAnalysis {
     fn analyze_func(&mut self, func: &Function) -> Result<()> {
         for loc in func.locations.iter() {
             let mut domain = AnalysisDomain::new();
-            let preds = func.predecessors(&loc);
-            if preds.len() == 0 {
+            let preds = func.predecessors(loc);
+            if preds.is_empty() {
                 domain = self.state.get(&Location::START).unwrap().clone();
             } else {
                 for pred_loc in preds {
                     domain.join(self.state.entry(pred_loc).or_insert(AnalysisDomain::new()));
                 }
             }
-            match func.instr(&loc) {
+            match func.instr(loc) {
                 Either::Left(stmt) => self.handle_stmt(&mut domain, stmt),
                 Either::Right(term) => self.handle_term(&mut domain, term),
             }?;
@@ -448,7 +448,7 @@ impl FunctionAnalysis {
 }
 
 pub fn analyze(prog: Program) -> Result<GlobalAnalysis> {
-    let mut global_analysis = GlobalAnalysis::new();
+    let mut global_analysis = GlobalAnalysis::new(&prog.functions);
     for func in prog.functions {
         // TODO: maybe do some nice caching later for modularity with user's own funcs
         global_analysis.analyze_func(&func)?;

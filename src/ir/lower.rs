@@ -67,11 +67,13 @@ pub fn lower_func(func: ASTFunction) -> Result<Function> {
         Path::new(&[func.name.to_string()]),
         cfg,
         lowerer.params,
+        lowerer.returns,
     ))
 }
 
 struct LowerBody {
     pub params: Vec<(Path, Option<Variable>)>,
+    pub returns: Option<Vec<Variable>>,
     pub graph: PartialCfg, // might need to turn this into DiGraph<Option<BasicBlock>, ()>
     pub cur_block: Vec<Statement>,
     pub cur_loc: Option<BasicBlockIdx>,
@@ -116,8 +118,24 @@ impl LowerBody {
             known_paths.insert(identifier.to_string());
         }
 
+        // TODO: handle tuple returns + factor out the logic identical from above
+        let mut returns = None;
+        if let Some(ret_ty) = func.returns {
+            if let ASTExpr::Subscript(subscript) = *ret_ty {
+                if let ASTExpr::Name(name) = *subscript.value {
+                    if name.id.as_str() == "T" {
+                        if let ASTExpr::Constant(shape_str) = *subscript.slice {
+                            let shape_str = shape_str.value.expect_str();
+                            returns = Some(vec![Variable::Tensor(Shape::from_str(&shape_str))]);
+                        }
+                    }
+                }
+            }
+        }
+
         LowerBody {
             params,
+            returns,
             graph,
             cur_block: Vec::new(),
             cur_loc: Some(start_block),

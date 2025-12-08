@@ -1,13 +1,15 @@
 use core::panic;
 use std::cmp::max;
+use std::path::Path;
 use std::{collections::HashMap, sync::LazyLock};
 
 use anyhow::{Result, anyhow};
-use itertools::EitherOrBoth::{Both, Left, Right};
+use itertools::EitherOrBoth::{self, Both, Left, Right};
 use itertools::Itertools;
 
 use crate::analysis::errors::ShapeError;
 use crate::analysis::{DimKind, DimVar, Shape, Variable};
+use crate::ir::{Function, Parameter};
 
 macro_rules! get_args {
     ($args:expr, $model_name:ident, $( $param:ident : $method:ident => $type_name:expr ),+ $(,)?) => {
@@ -39,13 +41,35 @@ fn constraint_equal(dim1: &DimVar, dim2: &DimVar) -> Result<()> {
 
 pub struct ModelContext {
     pub torch: TorchModels,
+    pub user: UserModels,
 }
 
 impl ModelContext {
-    pub fn new() -> Self {
+    pub fn new(funcs: &Vec<Function>) -> Self {
         Self {
             torch: TorchModels::default(),
+            user: UserModels::new(funcs),
         }
+    }
+}
+
+pub struct UserModels {
+    pub funcs: HashMap<String, Box<dyn Model>>,
+}
+
+impl UserModels {
+    fn new(funcs: &Vec<Function>) -> Self {
+        let map: HashMap<String, Box<dyn Model>> = funcs
+            .iter()
+            .map(|f| {
+                (
+                    f.identifier.to_string(),
+                    Box::new(SignatureModel::new(f)) as Box<dyn Model>,
+                )
+            })
+            .collect();
+
+        Self { funcs: map }
     }
 }
 
@@ -139,10 +163,13 @@ impl ModelContext {
         }
     }
 
+    pub fn resolve_user_model(&self, path: &str) -> Option<&dyn Model> {
+        self.user.funcs.get(path).map(|boxed| boxed.as_ref())
+    }
+
     pub fn resolve(&self, path: &str) -> Option<&dyn Model> {
         self.resolve_torch_model(path)
-
-        // can handle user models here later
+            .or_else(|| self.resolve_user_model(path))
     }
 }
 
@@ -401,3 +428,94 @@ static TENSOR_FROM_SHAPE_SIGNATURE: LazyLock<Signature> = LazyLock::new(|| {
         ("keepdim".to_string(), Some(Variable::None)), // TODO: handle this, default = False
     ]
 });
+
+struct SignatureModel {
+    params: Vec<Parameter>,
+    // TODO: in the future with the possibility of mutations,
+    // doesn't necc need to have return annotation
+    returns: Option<Vec<Variable>>,
+}
+
+impl SignatureModel {
+    fn new(func: &Function) -> Self {
+        // construct signature from function sig
+        SignatureModel {
+            params: func.params.clone(),
+            returns: func.returns.clone(),
+        }
+    }
+}
+
+impl Model for SignatureModel {
+    fn infer(&self, args: Vec<&Variable>, kwargs: HashMap<String, &Variable>) -> Result<Shape> {
+        let mut callee_to_caller: HashMap<DimVar, DimVar> = HashMap::new();
+        for argv in args.iter().zip_longest(self.params.iter()) {
+            let (caller_v, callee_v) = match argv {
+                EitherOrBoth::Both(arg_v, param) => {
+                    let Some(param_v) = &param.1 else {
+                        continue;
+                    };
+                    (arg_v, param_v)
+                }
+                EitherOrBoth::Right(param) => {
+                    // do a lookup into kwargs
+                    let Some(param_v) = &param.1 else {
+                        continue;
+                    };
+                    let Some(arg_v) = kwargs.get(&param.0.to_string()) else {
+                        continue;
+                    };
+                    (arg_v, param_v)
+                }
+                EitherOrBoth::Left(_) => unreachable!("args should not be longer than params"),
+            };
+            match (caller_v, callee_v) {
+                (Variable::Tensor(Shape(caller_dims)), Variable::Tensor(Shape(callee_dims))) => {
+                    if caller_dims.len() != caller_dims.len() {
+                        // TODO: in the future we should handle ellipsis
+                        continue;
+                    }
+
+                    for (caller_dv, callee_dv) in caller_dims.iter().zip(callee_dims.iter()) {
+                        if let Some(prev_caller_dv) = callee_to_caller.get(callee_dv) {
+                            // TODO: we see a caller side mismatch here, do something with it
+                            if prev_caller_dv != caller_dv {
+                                return Err(anyhow!(ShapeError::mismatched(
+                                    prev_caller_dv,
+                                    caller_dv
+                                )));
+                            }
+                        } else {
+                            callee_to_caller.insert(callee_dv.clone(), caller_dv.clone());
+                        }
+                    }
+                }
+                _ => continue,
+            }
+        }
+        // TODO: models currently only return one shape, should capture tuple returns in the future
+        // for now, just assuming this is the case
+        let ret_shape = {
+            let Some(returns) = &self.returns else {
+                let err = ShapeError::UninferrableCall {};
+                return Err(anyhow!(err));
+            };
+
+            match &returns[0] {
+                Variable::Tensor(Shape(shape)) => shape,
+                // TODO: handle possible returns of dimvars, ideally
+                // return of uninferrablecall should result in Variable::Top return from whatever's
+                // calling this atm
+                _ => return Err(anyhow!(ShapeError::UninferrableCall {})),
+            }
+        };
+        let ret_shape = ret_shape
+            .iter()
+            .map(|dv| match callee_to_caller.get(dv) {
+                Some(caller_dv) => Ok(caller_dv.clone()),
+                None => Err(anyhow!(ShapeError::UninferrableCall {})),
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Shape(ret_shape))
+    }
+}
