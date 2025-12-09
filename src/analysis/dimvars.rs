@@ -2,7 +2,7 @@
 
 use std::{
     collections::HashMap,
-    ops::{Add, Mul, Sub},
+    ops::{Add, Div, Mul, Sub},
 };
 
 use anyhow::{Result, anyhow};
@@ -361,6 +361,97 @@ impl DimVar {
     pub fn kind(&self) -> DimKind {
         self.kind.clone()
     }
+
+    pub fn div(&self, rhs: &Self) -> Result<Self> {
+        let lhs_can = self.canonical();
+        let rhs_can = rhs.canonical();
+
+        if rhs_can.0.len() != 1 {
+            return Err(anyhow!(
+                "division only allowed by a single multiplicative term: {rhs:?}"
+            ));
+        }
+
+        let divisor = &rhs_can.0[0];
+
+        if divisor.constant == 0 {
+            return Err(anyhow!("division by zero dim expression"));
+        }
+
+        let mut out_terms = Vec::with_capacity(lhs_can.0.len());
+
+        for num in &lhs_can.0 {
+            if num.constant % divisor.constant != 0 {
+                return Err(anyhow!(
+                    "dimvar division failed: constants {} not divisible by {}",
+                    num.constant,
+                    divisor.constant
+                ));
+            }
+
+            let new_const = num.constant / divisor.constant;
+            let mut new_vars = num.variables.clone();
+
+            for dvar in &divisor.variables {
+                let mut found = false;
+                for nvar in &mut new_vars {
+                    if nvar.variable == dvar.variable {
+                        if nvar.pow < dvar.pow {
+                            return Err(anyhow!(
+                                "dimvar division failed: power {} < {} for {}",
+                                nvar.pow,
+                                dvar.pow,
+                                nvar.variable
+                            ));
+                        }
+                        nvar.pow -= dvar.pow;
+                        found = true;
+                        break;
+                    }
+                }
+                if !found && dvar.pow > 0 {
+                    return Err(anyhow!(
+                        "dimvar division failed: missing factor {:?} in {:?}",
+                        dvar,
+                        num
+                    ));
+                }
+            }
+
+            new_vars.retain(|v| v.pow > 0);
+
+            out_terms.push(Term::new(new_const, new_vars));
+        }
+
+        Ok(DimVar::from_canonical(CanonicalDimVar::normalize(
+            out_terms,
+        )))
+    }
+
+    fn from_canonical(c: CanonicalDimVar) -> Self {
+        let mut it = c.0.into_iter();
+
+        let first = it.next().expect("canonical always has ≥1 term");
+
+        let mut acc = term_to_dim(&first);
+        for t in it {
+            acc = acc + term_to_dim(&t);
+        }
+        acc
+    }
+}
+
+fn term_to_dim(t: &Term) -> DimVar {
+    let mut out = DimVar::from(t.constant);
+
+    for np in &t.variables {
+        let mut factor = DimVar::new(DimKind::Named(np.variable.clone()));
+        for _ in 1..np.pow {
+            factor = factor.clone() * DimVar::new(DimKind::Named(np.variable.clone()));
+        }
+        out = out * factor;
+    }
+    out
 }
 
 impl From<i64> for DimVar {

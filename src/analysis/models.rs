@@ -79,6 +79,7 @@ pub struct TorchModels {
     pub rdx: RdxModel,
     pub broadcast: BroadcastModel,
     pub concat: ConcatModel,
+    pub reshape: ReshapeModel,
 }
 
 impl Default for TorchModels {
@@ -89,6 +90,7 @@ impl Default for TorchModels {
             rdx: RdxModel,
             broadcast: BroadcastModel,
             concat: ConcatModel,
+            reshape: ReshapeModel,
         }
     }
 }
@@ -162,6 +164,7 @@ impl ModelContext {
             | "torch.special.digamma" => Some(&self.torch.passthrough),
             "torch.sum" => Some(&self.torch.rdx),
             "torch.concat" => Some(&self.torch.concat),
+            "torch.reshape" => Some(&self.torch.reshape),
             _ => None,
         }
     }
@@ -420,7 +423,7 @@ impl Model for RdxModel {
     }
 }
 
-struct TensorFromShapeModel;
+pub struct TensorFromShapeModel;
 
 // we'll have to handle *args in the signature
 
@@ -433,14 +436,7 @@ static TENSOR_FROM_SHAPE_SIGNATURE: LazyLock<Signature> = LazyLock::new(|| {
 });
 
 pub struct ConcatModel;
-// @overload
-// def concat(
-//     tensors: tuple[Tensor, ...] | list[Tensor] | None,
-//     dim: _int = 0,
-//     *,
-//     out: Tensor | None = None,
-// ) -> Tensor:
-//
+
 static CONCAT_SIGNATURE: LazyLock<Signature> = LazyLock::new(|| {
     vec![
         ("tensors".to_string(), None),
@@ -487,11 +483,9 @@ impl Model for ConcatModel {
         };
 
         // TODO: this needs cleaning to prevent so many clones
-        let res = tensors[1..].iter().fold(
-            Ok(tensors[0].clone()),
-            |cur_s: Result<Vec<DimVar>>, s: &Vec<DimVar>| {
-                let cur_s = cur_s?;
-
+        let res: Vec<DimVar> = tensors[1..]
+            .iter()
+            .try_fold(tensors[0].clone(), |cur_s, s| {
                 cur_s
                     .iter()
                     .zip(s.iter())
@@ -506,10 +500,68 @@ impl Model for ConcatModel {
                         }
                     })
                     .collect::<Result<Vec<_>>>()
-            },
-        )?;
+            })?;
 
         Ok(Shape(res))
+    }
+}
+
+pub struct ReshapeModel;
+
+static RESHAPE_SIGNATURE: LazyLock<Signature> =
+    LazyLock::new(|| vec![("input".to_string(), None), ("shape".to_string(), None)]);
+
+impl Model for ReshapeModel {
+    fn infer(&self, args: Vec<&Variable>, kwargs: HashMap<String, &Variable>) -> Result<Shape> {
+        let args = resolve_args(args, kwargs, RESHAPE_SIGNATURE.iter().cloned());
+        let (src_shape, tgt_shape) = get_args!(args, Concat,
+            input: as_shape_dims => "Tensor",
+            shape: as_shape_dims => "Tuple",
+        )?;
+
+        println!("src shape: {}", Shape(src_shape.clone()));
+        println!("tgt shape: {}", Shape(tgt_shape.clone()));
+
+        // validate shape is preserved
+        let src_shape_prod = src_shape
+            .iter()
+            .fold(DimVar::from(1), |acc, dv| acc * dv.clone());
+
+        let tgt_shape_prod = tgt_shape.iter().fold(DimVar::from(1), |acc, dv| {
+            if dv.clone() == DimVar::from(-1) {
+                acc
+            } else {
+                acc * dv.clone()
+            }
+        });
+
+        let tgt_shape = tgt_shape
+            .iter()
+            .map(|dv| -> Result<DimVar> {
+                if *dv == DimVar::from(-1) {
+                    src_shape_prod.div(&tgt_shape_prod)
+                } else {
+                    Ok(dv.clone())
+                }
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let tgt_shape_prod = tgt_shape.iter().fold(DimVar::from(1), |acc, dv| {
+            if dv.clone() == DimVar::from(-1) {
+                acc
+            } else {
+                acc * dv.clone()
+            }
+        });
+
+        if tgt_shape_prod != src_shape_prod {
+            return Err(anyhow!(ShapeError::BadReshape {
+                src: Shape(src_shape),
+                tgt: Shape(tgt_shape)
+            }));
+        }
+
+        Ok(Shape(tgt_shape))
     }
 }
 
@@ -529,7 +581,6 @@ impl SignatureModel {
         }
     }
 }
-
 impl Model for SignatureModel {
     fn infer(&self, args: Vec<&Variable>, kwargs: HashMap<String, &Variable>) -> Result<Shape> {
         let mut callee_to_caller: HashMap<String, DimVar> = HashMap::new();

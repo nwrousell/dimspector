@@ -20,6 +20,15 @@ pub enum ShapeError {
     #[error("Dimension {dim_ref} out of range for Tensor of rank {rank}")]
     #[diagnostic(code(shape::mismatched_dims))]
     DimOutRange { dim_ref: i64, rank: usize },
+
+    #[error("Can't reshape {src} to {tgt}")]
+    #[diagnostic(code(shape::mismatched_dims))]
+    BadReshape {
+        src: Shape,
+        tgt: Shape,
+        // #[label("mismatch occurs here")]
+        // span: SourceSpan,
+    },
 }
 
 impl ShapeError {
