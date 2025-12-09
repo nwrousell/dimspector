@@ -97,7 +97,14 @@ pub fn ir_with_inferred_shapes_to_string(ir: &Function, func_facts: &FunctionAna
         }
         write!(output, "{}", param).unwrap();
     }
-    output.push_str("):\n");
+    output.push_str(")");
+
+    if let Some(returns) = &ir.returns {
+        output.push_str(" -> ");
+        output.push_str(&returns.iter().join(", "));
+        output.push_str("");
+    }
+    output.push_str(":\n");
 
     for block_idx in ir.blocks() {
         let block = ir.data(block_idx);

@@ -23,7 +23,13 @@ impl fmt::Display for Function {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "def {}(", self.identifier)?;
         write_comma_separated(f, &self.params)?;
-        write!(f, "):\n")?;
+        write!(f, ")")?;
+        if let Some(returns) = &self.returns {
+            write!(f, " -> ")?;
+            write_comma_separated(f, returns)?;
+        }
+
+        write!(f, ":\n")?;
 
         // Print basic blocks in reverse post-order
         for idx in self.blocks() {
