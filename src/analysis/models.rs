@@ -448,7 +448,7 @@ impl SignatureModel {
 
 impl Model for SignatureModel {
     fn infer(&self, args: Vec<&Variable>, kwargs: HashMap<String, &Variable>) -> Result<Shape> {
-        let mut callee_to_caller: HashMap<DimVar, DimVar> = HashMap::new();
+        let mut callee_to_caller: HashMap<String, DimVar> = HashMap::new();
         for argv in args.iter().zip_longest(self.params.iter()) {
             let (caller_v, callee_v) = match argv {
                 EitherOrBoth::Both(arg_v, param) => {
@@ -476,17 +476,32 @@ impl Model for SignatureModel {
                         continue;
                     }
 
+                    let mut eq_constriants: Vec<(&DimVar, &DimVar)> = Vec::new();
+
                     for (caller_dv, callee_dv) in caller_dims.iter().zip(callee_dims.iter()) {
-                        if let Some(prev_caller_dv) = callee_to_caller.get(callee_dv) {
-                            // TODO: we see a caller side mismatch here, do something with it
-                            if prev_caller_dv != caller_dv {
-                                return Err(anyhow!(ShapeError::mismatched(
-                                    prev_caller_dv,
-                                    caller_dv
-                                )));
+                        match callee_dv.kind() {
+                            DimKind::Named(name) => {
+                                if let Some(prev_caller_dv) = callee_to_caller.get(&name) {
+                                    // TODO: we see a caller side mismatch here, do something with it
+                                    if prev_caller_dv != caller_dv {
+                                        return Err(anyhow!(ShapeError::mismatched(
+                                            prev_caller_dv,
+                                            caller_dv
+                                        )));
+                                    }
+                                } else {
+                                    callee_to_caller.insert(name, caller_dv.clone());
+                                }
                             }
-                        } else {
-                            callee_to_caller.insert(callee_dv.clone(), caller_dv.clone());
+
+                            _ => eq_constriants.push((caller_dv, callee_dv)),
+                        }
+                    }
+
+                    // check constraints are good
+                    for (caller_dv, callee_dv) in eq_constriants {
+                        if callee_dv.substitute(&callee_to_caller)? != *caller_dv {
+                            return Err(anyhow!(ShapeError::mismatched(caller_dv, callee_dv)));
                         }
                     }
                 }
@@ -511,10 +526,7 @@ impl Model for SignatureModel {
         };
         let ret_shape = ret_shape
             .iter()
-            .map(|dv| match callee_to_caller.get(dv) {
-                Some(caller_dv) => Ok(caller_dv.clone()),
-                None => Err(anyhow!(ShapeError::UninferrableCall {})),
-            })
+            .map(|dv| dv.substitute(&callee_to_caller))
             .collect::<Result<Vec<_>>>()?;
         Ok(Shape(ret_shape))
     }

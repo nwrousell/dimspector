@@ -1,6 +1,118 @@
 // NOTE: this representation disallows A[..., d] shapes
 
-use std::ops::{Add, Mul, Sub};
+use std::{
+    collections::HashMap,
+    ops::{Add, Mul, Sub},
+};
+
+use anyhow::{Result, anyhow};
+use std::str::Chars;
+
+pub fn parse_dimvar(s: &str) -> Result<DimVar> {
+    let mut parser = Parser::new(s);
+    let out = parser.parse_expr()?;
+    if parser.peek().is_some() {
+        return Err(anyhow!("trailing garbage in dim expression: {}", s));
+    }
+    Ok(out)
+}
+
+struct Parser<'a> {
+    it: Chars<'a>,
+    look: Option<char>,
+}
+
+impl<'a> Parser<'a> {
+    fn new(s: &'a str) -> Self {
+        let mut it = s.chars();
+        let look = it.next();
+        Self { it, look }
+    }
+
+    fn bump(&mut self) {
+        self.look = self.it.next();
+    }
+
+    fn peek(&self) -> Option<char> {
+        self.look
+    }
+
+    fn eat(&mut self, c: char) -> bool {
+        if self.look == Some(c) {
+            self.bump();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn parse_expr(&mut self) -> Result<DimVar> {
+        let mut node = self.parse_term()?;
+        loop {
+            if self.eat('+') {
+                let rhs = self.parse_term()?;
+                node = node + rhs;
+            } else if self.eat('-') {
+                let rhs = self.parse_term()?;
+                node = node - rhs;
+            } else {
+                break;
+            }
+        }
+        Ok(node)
+    }
+
+    fn parse_term(&mut self) -> Result<DimVar> {
+        let mut node = self.parse_factor()?;
+        loop {
+            if self.eat('*') {
+                let rhs = self.parse_factor()?;
+                node = node * rhs;
+            } else {
+                break;
+            }
+        }
+        Ok(node)
+    }
+
+    fn parse_factor(&mut self) -> Result<DimVar> {
+        match self.peek() {
+            Some(c) if c.is_ascii_digit() || c == '-' => self.parse_int(),
+            Some(c) if c.is_ascii_alphabetic() => self.parse_ident(),
+            _ => Err(anyhow!("unexpected char {:?}", self.look)),
+        }
+    }
+
+    fn parse_int(&mut self) -> Result<DimVar> {
+        let mut s = String::new();
+        if self.eat('-') {
+            s.push('-');
+        }
+        while let Some(c) = self.peek() {
+            if c.is_ascii_digit() {
+                s.push(c);
+                self.bump();
+            } else {
+                break;
+            }
+        }
+        let n: i64 = s.parse()?;
+        Ok(DimVar::from(n))
+    }
+
+    fn parse_ident(&mut self) -> Result<DimVar> {
+        let mut s = String::new();
+        while let Some(c) = self.peek() {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                s.push(c);
+                self.bump();
+            } else {
+                break;
+            }
+        }
+        Ok(DimVar::new(DimKind::Named(s)))
+    }
+}
 
 #[derive(Debug, Clone, Hash)]
 pub enum DimKind {
@@ -162,6 +274,18 @@ impl DimVar {
                 return left.mul(&right);
             }
         }
+    }
+
+    pub fn substitute(&self, map: &HashMap<String, DimVar>) -> Result<DimVar> {
+        Ok(match self.kind() {
+            DimKind::Named(name) => map
+                .get(&name)
+                .cloned()
+                .ok_or_else(|| anyhow!("can't resolve callee dim var {}", name))?,
+            DimKind::Mul { left, right } => left.substitute(map)? * right.substitute(map)?,
+            DimKind::Add { left, right } => left.substitute(map)? * right.substitute(map)?,
+            DimKind::Concrete(_) => self.clone(),
+        })
     }
 }
 
