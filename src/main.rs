@@ -1,12 +1,12 @@
 use clap::Parser;
-use miette::{MietteHandlerOpts, Result};
+use dimspector::{
+    analysis::{analyze, print_ir_with_inferred_shapes},
+    ast, ir,
+};
+// use miette::{MietteHandlerOpts, Result};
 use std::path::PathBuf;
 
-use crate::{analysis::analyze, ast::Input};
-
-mod analysis;
-mod ast;
-mod ir;
+use anyhow::Result;
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -18,27 +18,38 @@ fn main() -> Result<()> {
     env_logger::init();
 
     // Configure miette to show more surrounding source code
-    miette::set_hook(Box::new(|_| {
-        Box::new(
-            MietteHandlerOpts::new()
-                .context_lines(5) // Show 6 lines above and below (default is 3)
-                .build(),
-        )
-    }))?;
+    // miette::set_hook(Box::new(|_| {
+    //     Box::new(
+    //         MietteHandlerOpts::new()
+    //             .context_lines(5) // Show 6 lines above and below (default is 3)
+    //             .build(),
+    //     )
+    // }))?;
 
     let args = Args::parse();
 
-    let input = ast::read(&args.file)?;
-
-    let result = run(&args, &input);
-    result.map_err(move |e| e.with_source_code(input.into_named_source()))
+    run(args.file)
 }
 
-fn run(_args: &Args, input: &Input) -> Result<()> {
-    let program = ast::parse(input)?;
-    log::debug!("AST:\n{}", program);
+fn run(file: PathBuf) -> Result<()> {
+    let input = ast::read(&file)?;
 
-    analyze(program)?;
+    let program = ast::parse(&input)?;
+    // log::debug!("AST:\n{}", program);
+
+    let ir = ir::lower(program)?;
+    log::debug!("IR:\n{}", ir);
+
+    // println!("IR full:\n{:#?}", ir);
+
+    let res = analyze(ir.clone())?;
+    // log::debug!("Analysis:\n{}", res);
+
+    for (name, facts) in &res.functions {
+        let func = ir.functions.iter().find(|f| f.identifier == *name).unwrap();
+        print_ir_with_inferred_shapes(func, facts);
+        println!("\n")
+    }
 
     Ok(())
 }

@@ -1,11 +1,23 @@
-use anyhow::Error;
+mod lower;
+mod print;
+pub mod types;
 
-pub use crate::ir::types::{Function, Program};
+use anyhow::Result;
 
-mod types;
+use lower::lower_func;
+pub use types::{
+    Annotation, BasicBlock, BasicBlockIdx, Cfg, Expr, Function, Parameter, Path, Program,
+    Statement, Terminator,
+};
 
-fn lower(program: rustpython_parser::ast::ModModule) -> Result<Program, Error> {
-    Ok(Program {
-        functions: Vec::new(),
-    })
+use crate::ast;
+
+pub fn lower(program: ast::Program) -> Result<Program> {
+    let functions = program
+        .functions
+        .iter()
+        .map(|func| lower_func(func.clone()))
+        .collect::<Result<Vec<Function>, anyhow::Error>>()?;
+
+    Ok(Program { functions })
 }

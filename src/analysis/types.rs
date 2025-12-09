@@ -1,37 +1,112 @@
-// NOTE: this representation disallows A[..., d] shapes
+use crate::analysis::dimvars::{DimKind, DimVar};
 
-use std::fmt::Display;
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum Variable {
-    NotTensor,
-    // AxixLength { axis: u32, root: Identifier, loc: Location }
+    Top,
+    DimVar(DimVar),
     Tensor(Shape),
+    Tuple(Vec<Variable>),
+    None,
 }
 
-#[derive(Debug, Clone)]
-pub enum Shape {
-    Unknown,
-    Known(Vec<Axis>),
-}
-
-impl Shape {
-    pub fn from_str(s: &str) -> Self {
-        let mut axes = Vec::new();
-        for axis in s.split(' ') {
-            if let Ok(n) = axis.parse::<u32>() {
-                axes.push(Axis::Concrete(n));
-            } else if !axis.trim().is_empty() {
-                axes.push(Axis::Named(axis.to_string()));
-            }
+impl Variable {
+    pub fn as_dimvar(&self) -> Option<&DimVar> {
+        match self {
+            Variable::Top => None,
+            Variable::DimVar(dim_var) => Some(dim_var),
+            Variable::Tensor(_) => None,
+            Variable::Tuple(_) => None,
+            Variable::None => None,
         }
+    }
 
-        Self::Known(axes)
+    pub fn as_shape(&self) -> Option<Shape> {
+        match self {
+            Variable::Top => None,
+            Variable::DimVar(_) => None,
+            Variable::Tensor(shape) => Some(shape.clone()),
+            Variable::Tuple(vars) => {
+                if vars.iter().all(|var| matches!(var, Variable::DimVar(_))) {
+                    let shape = Shape(
+                        vars.iter()
+                            .map(|var| {
+                                let Variable::DimVar(dvar) = var else {
+                                    unreachable!("all var in vars should be dimvar")
+                                };
+                                dvar.clone()
+                            })
+                            .collect(),
+                    );
+                    Some(shape)
+                } else {
+                    None
+                }
+            }
+            Variable::None => None,
+        }
+    }
+
+    pub fn as_shape_dims(&self) -> Option<Vec<DimVar>> {
+        match self {
+            Variable::Top => None,
+            Variable::DimVar(_) => None,
+            Variable::Tensor(shape) => Some(shape.0.clone()),
+            Variable::Tuple(vars) => {
+                if vars.iter().all(|var| matches!(var, Variable::DimVar(_))) {
+                    Some(
+                        vars.iter()
+                            .map(|var| {
+                                let Variable::DimVar(dvar) = var else {
+                                    unreachable!("all var in vars should be dimvar")
+                                };
+                                dvar.clone()
+                            })
+                            .collect(),
+                    )
+                } else {
+                    None
+                }
+            }
+            Variable::None => None,
+        }
+    }
+
+    pub fn as_concrete_dimvar(&self) -> Option<i64> {
+        if let Some(dimvar) = self.as_dimvar() {
+            match dimvar.kind() {
+                DimKind::Concrete(c) => Some(c),
+                _ => None,
+            }
+        } else {
+            None
+        }
     }
 }
 
-#[derive(Debug, Clone)]
-pub enum Axis {
-    Named(String),
-    Concrete(u32),
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct Shape(pub Vec<DimVar>);
+
+impl Shape {
+    pub fn from_str(s: &str) -> Self {
+        let mut dims = Vec::new();
+        for dim in s.split(' ') {
+            if let Ok(n) = dim.parse::<i64>() {
+                dims.push(DimVar {
+                    kind: DimKind::Concrete(n),
+                });
+            } else if !dim.trim().is_empty() {
+                dims.push(DimVar {
+                    kind: DimKind::Named(dim.to_string()),
+                });
+            }
+        }
+
+        Self(dims)
+    }
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct DimSlice {
+    pub lower: Option<Variable>,
+    pub upper: Option<Variable>,
 }

@@ -1,5 +1,5 @@
 [package]
-name = "torch-infer2"
+name = "dimspector"
 version = "0.1.0"
 edition = "2024"
 
@@ -7,8 +7,16 @@ edition = "2024"
 anyhow = "1.0.100"
 clap = { version = "4.5.53", features = ["derive"] }
 env_logger = "0.11.8"
+insta = "1.44.3"
+itertools = "0.14.0"
 log = "0.4"
 miette = { version = "7.6.0", features = ["fancy"] }
+num-traits = "0.2.19"
 petgraph = "0.8.3"
 rustpython-parser = "0.4.0"
+smallvec = "1.15.1"
+textwrap = "0.16.2"
 thiserror = "2.0.17"
+
+[dev-dependencies]
+walkdir = "2.5"
