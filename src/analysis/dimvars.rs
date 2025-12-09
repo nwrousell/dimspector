@@ -138,11 +138,11 @@ impl CanonicalDimVar {
 
         let mut result: Vec<Term> = Vec::with_capacity(terms.len());
         for term in terms {
-            if let Some(last) = result.last_mut() {
-                if last.variables == term.variables {
-                    last.constant += term.constant;
-                    continue;
-                }
+            if let Some(last) = result.last_mut()
+                && last.variables == term.variables
+            {
+                last.constant += term.constant;
+                continue;
             }
             result.push(term);
         }

@@ -1,7 +1,7 @@
-use miette::{Diagnostic, SourceSpan};
+use miette::Diagnostic;
 use thiserror::Error;
 
-use crate::analysis::DimVar;
+use crate::analysis::{DimVar, Shape};
 
 #[derive(Diagnostic, Error, Debug)]
 pub enum ShapeError {
@@ -16,6 +16,10 @@ pub enum ShapeError {
 
     #[error("Can't infer return shape")]
     UninferrableCall {},
+
+    #[error("Dimension {dim_ref} out of range for Tensor of rank {rank}")]
+    #[diagnostic(code(shape::mismatched_dims))]
+    DimOutRange { dim_ref: i64, rank: usize },
 }
 
 impl ShapeError {

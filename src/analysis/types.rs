@@ -20,6 +20,13 @@ impl Variable {
         }
     }
 
+    pub fn as_tuple(&self) -> Option<&Vec<Variable>> {
+        match self {
+            Variable::Tuple(vars) => Some(vars),
+            _ => None,
+        }
+    }
+
     pub fn as_shape(&self) -> Option<Shape> {
         match self {
             Variable::Top => None,

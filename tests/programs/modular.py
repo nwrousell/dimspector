@@ -11,6 +11,9 @@ def car(x: T["b d"]) -> T["b d-1"]:
     x = x[:,:-1]
     return x
 
+def tar(x: T["b d"], y: T["b-1 d"]) -> T["b d"]:
+    return x
+
 def bar(x: T["b b"]):
     z = foo(x, x)
     return z
@@ -18,6 +21,11 @@ def bar(x: T["b b"]):
 def baz(x: T["h w"]):
     x = car(x)
     return x
+
+def quz(x: T["b d"]):
+    y = x[:-1,:]
+    z = tar(x, y)
+    return z
 
 # def bad_bingus(x: T["d e"], y: T["f g"]):
 #     z = foo(x, y)

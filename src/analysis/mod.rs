@@ -28,7 +28,7 @@ pub trait JoinSemiLattice: Eq {
 impl JoinSemiLattice for AnalysisDomain {
     fn join(&mut self, other: &Self) {
         for (path, vars) in other.iter() {
-            if let Some(e) = self.get_mut(&path) {
+            if let Some(e) = self.get_mut(path) {
                 e.extend(vars.iter().cloned());
             } else {
                 self.insert(path.clone(), vars.clone());
@@ -407,9 +407,7 @@ impl FunctionAnalysis {
                     .map(|set| set.iter().cloned())
                     .multi_cartesian_product();
 
-                Ok(HashSet::from_iter(
-                    products.map(|vars| Variable::Tuple(vars)),
-                ))
+                Ok(HashSet::from_iter(products.map(Variable::Tuple)))
             }
         }
     }
@@ -434,7 +432,7 @@ impl FunctionAnalysis {
                 domain = self.state.get(&Location::START).unwrap().clone();
             } else {
                 for pred_loc in preds {
-                    domain.join(self.state.entry(pred_loc).or_insert(AnalysisDomain::new()));
+                    domain.join(self.state.entry(pred_loc).or_default());
                 }
             }
             match func.instr(loc) {

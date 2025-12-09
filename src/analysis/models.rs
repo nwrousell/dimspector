@@ -78,6 +78,7 @@ pub struct TorchModels {
     pub passthrough: PassthroughModel,
     pub rdx: RdxModel,
     pub broadcast: BroadcastModel,
+    pub concat: ConcatModel,
 }
 
 impl Default for TorchModels {
@@ -87,6 +88,7 @@ impl Default for TorchModels {
             passthrough: PassthroughModel,
             rdx: RdxModel,
             broadcast: BroadcastModel,
+            concat: ConcatModel,
         }
     }
 }
@@ -159,6 +161,7 @@ impl ModelContext {
             | "torch.special.logit"
             | "torch.special.digamma" => Some(&self.torch.passthrough),
             "torch.sum" => Some(&self.torch.rdx),
+            "torch.concat" => Some(&self.torch.concat),
             _ => None,
         }
     }
@@ -428,6 +431,87 @@ static TENSOR_FROM_SHAPE_SIGNATURE: LazyLock<Signature> = LazyLock::new(|| {
         ("keepdim".to_string(), Some(Variable::None)), // TODO: handle this, default = False
     ]
 });
+
+pub struct ConcatModel;
+// @overload
+// def concat(
+//     tensors: tuple[Tensor, ...] | list[Tensor] | None,
+//     dim: _int = 0,
+//     *,
+//     out: Tensor | None = None,
+// ) -> Tensor:
+//
+static CONCAT_SIGNATURE: LazyLock<Signature> = LazyLock::new(|| {
+    vec![
+        ("tensors".to_string(), None),
+        (
+            "dim".to_string(),
+            Some(Variable::DimVar(DimVar {
+                kind: DimKind::Concrete(0),
+            })),
+        ),
+    ]
+});
+
+impl Model for ConcatModel {
+    fn infer(&self, args: Vec<&Variable>, kwargs: HashMap<String, &Variable>) -> Result<Shape> {
+        let args = resolve_args(args, kwargs, CONCAT_SIGNATURE.iter().cloned());
+        let (tensors, dim) = get_args!(args, Concat,
+            tensors: as_tuple => "Tuple",
+            dim: as_concrete_dimvar => "Int",
+        )?;
+
+        let tensors = tensors
+            .iter()
+            .map(|v| {
+                let Some(Shape(s)) = v.as_shape() else {
+                    return Err(anyhow!("Argument must be list of Tensor"));
+                };
+                Ok(s)
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let rank = tensors[0].len() as i64;
+
+        if dim < -rank || dim >= rank {
+            return Err(anyhow!(ShapeError::DimOutRange {
+                dim_ref: dim,
+                rank: rank as usize
+            }));
+        }
+
+        let dim = if dim < 0 {
+            (tensors.len() as i64 + dim) as usize
+        } else {
+            dim as usize
+        };
+
+        // TODO: this needs cleaning to prevent so many clones
+        let res = tensors[1..].iter().fold(
+            Ok(tensors[0].clone()),
+            |cur_s: Result<Vec<DimVar>>, s: &Vec<DimVar>| {
+                let cur_s = cur_s?;
+
+                cur_s
+                    .iter()
+                    .zip(s.iter())
+                    .enumerate()
+                    .map(|(i, (c_dv, dv))| {
+                        if i == dim {
+                            Ok(c_dv.clone() + dv.clone())
+                        } else if c_dv != dv {
+                            Err(anyhow!(ShapeError::mismatched(c_dv, dv)))
+                        } else {
+                            Ok(c_dv.clone())
+                        }
+                    })
+                    .collect::<Result<Vec<_>>>()
+            },
+        )?;
+
+        Ok(Shape(res))
+    }
+}
 
 struct SignatureModel {
     params: Vec<Parameter>,
