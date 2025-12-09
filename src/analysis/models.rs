@@ -519,9 +519,6 @@ impl Model for ReshapeModel {
             shape: as_shape_dims => "Tuple",
         )?;
 
-        println!("src shape: {}", Shape(src_shape.clone()));
-        println!("tgt shape: {}", Shape(tgt_shape.clone()));
-
         // validate shape is preserved
         let src_shape_prod = src_shape
             .iter()
