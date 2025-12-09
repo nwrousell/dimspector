@@ -5,7 +5,7 @@ use itertools::Itertools;
 use crate::{
     analysis::{
         AnalysisDomain, FunctionAnalysis, GlobalAnalysis,
-        dimvars::{DimKind, DimVar},
+        dimvars::{CanonicalDimVar, DimKind, DimVar},
     },
     ir::{
         Function,
@@ -48,6 +48,7 @@ impl fmt::Display for Shape {
         write!(f, "]")
     }
 }
+
 impl fmt::Display for FunctionAnalysis {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Function {}\n", self.id)?;

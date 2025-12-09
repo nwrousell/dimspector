@@ -129,7 +129,7 @@ pub enum DimKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct CanonicalDimVar(Vec<Term>);
+pub struct CanonicalDimVar(Vec<Term>);
 
 impl CanonicalDimVar {
     /// Sort terms and merge those with the same variables
@@ -283,7 +283,7 @@ impl DimVar {
                 .cloned()
                 .ok_or_else(|| anyhow!("can't resolve callee dim var {}", name))?,
             DimKind::Mul { left, right } => left.substitute(map)? * right.substitute(map)?,
-            DimKind::Add { left, right } => left.substitute(map)? * right.substitute(map)?,
+            DimKind::Add { left, right } => left.substitute(map)? + right.substitute(map)?,
             DimKind::Concrete(_) => self.clone(),
         })
     }
