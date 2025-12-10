@@ -1,5 +1,6 @@
 use core::panic;
 use std::cmp::max;
+use std::num;
 use std::path::Path;
 use std::{collections::HashMap, sync::LazyLock};
 
@@ -519,6 +520,15 @@ impl Model for ReshapeModel {
             shape: as_shape_dims => "Tuple",
         )?;
 
+        let num_unspecified = tgt_shape.iter().fold(0, |acc, dv| {
+            acc + if *dv == DimVar::from(-1) { 1 } else { 0 }
+        });
+        if num_unspecified > 1 {
+            return Err(anyhow!(
+                "Cannot have multiple unspecified dims in torch.reshape"
+            ));
+        }
+
         // validate shape is preserved
         let src_shape_prod = src_shape
             .iter()
@@ -543,13 +553,9 @@ impl Model for ReshapeModel {
             })
             .collect::<Result<Vec<_>>>()?;
 
-        let tgt_shape_prod = tgt_shape.iter().fold(DimVar::from(1), |acc, dv| {
-            if dv.clone() == DimVar::from(-1) {
-                acc
-            } else {
-                acc * dv.clone()
-            }
-        });
+        let tgt_shape_prod = tgt_shape
+            .iter()
+            .fold(DimVar::from(1), |acc, dv| acc * dv.clone());
 
         if tgt_shape_prod != src_shape_prod {
             return Err(anyhow!(ShapeError::BadReshape {
