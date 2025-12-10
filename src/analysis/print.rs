@@ -80,11 +80,22 @@ impl fmt::Display for GlobalAnalysis {
 
 impl fmt::Display for CanonicalDimVar {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for (i, term) in self.0.iter().enumerate() {
-            if i > 0 {
-                write!(f, "+ ")?;
+        // Sort: variable terms first, then constant terms
+        let (var_terms, const_terms): (Vec<_>, Vec<_>) =
+            self.0.iter().partition(|t| !t.variables.is_empty());
+
+        let mut first = true;
+        for term in var_terms.iter().chain(const_terms.iter()) {
+            if first {
+                write!(f, "{}", term)?;
+                first = false;
+            } else if term.constant < 0 {
+                // Show as subtraction
+                let negated = Term::new(-term.constant, term.variables.clone());
+                write!(f, "-{}", negated)?;
+            } else {
+                write!(f, "+{}", term)?;
             }
-            write!(f, "{}", term)?;
         }
         Ok(())
     }
