@@ -535,7 +535,9 @@ impl Model for ReshapeModel {
             .fold(DimVar::from(1), |acc, dv| acc * dv.clone());
 
         let tgt_shape_prod = tgt_shape.iter().fold(DimVar::from(1), |acc, dv| {
-            if dv.clone() == DimVar::from(-1) {
+            if let DimKind::Concrete(c) = dv.kind()
+                && c == -1
+            {
                 acc
             } else {
                 acc * dv.clone()
@@ -591,6 +593,7 @@ impl Model for SignatureModel {
             let (caller_v, callee_v) = match argv {
                 EitherOrBoth::Both(arg_v, param) => {
                     let Some(param_v) = &param.1 else {
+                        // param doesn't have tensor annotation, skip
                         continue;
                     };
                     (arg_v, param_v)
@@ -609,12 +612,15 @@ impl Model for SignatureModel {
             };
             match (caller_v, callee_v) {
                 (Variable::Tensor(Shape(caller_dims)), Variable::Tensor(Shape(callee_dims))) => {
-                    if caller_dims.len() != caller_dims.len() {
+                    if caller_dims.len() != callee_dims.len() {
                         // TODO: in the future we should handle ellipsis
-                        continue;
+                        return Err(anyhow!(ShapeError::UnequalRank {
+                            rank_1: caller_dims.len(),
+                            rank_2: callee_dims.len()
+                        }));
                     }
 
-                    let mut eq_constriants: Vec<(&DimVar, &DimVar)> = Vec::new();
+                    let mut eq_constraints: Vec<(&DimVar, &DimVar)> = Vec::new();
 
                     for (caller_dv, callee_dv) in caller_dims.iter().zip(callee_dims.iter()) {
                         match callee_dv.kind() {
@@ -632,12 +638,18 @@ impl Model for SignatureModel {
                                 }
                             }
 
-                            _ => eq_constriants.push((caller_dv, callee_dv)),
+                            _ => eq_constraints.push((caller_dv, callee_dv)),
                         }
                     }
 
+                    // TODO
+                    // (a: T[x-1], b: T[x-1])
+                    // need to disallow this ^ by enforcing a singleton DimVar::Named for each symbolic dimvar  in the signature
+
+                    // TODO: handle concrete dimvars for constraints
+
                     // check constraints are good
-                    for (caller_dv, callee_dv) in eq_constriants {
+                    for (caller_dv, callee_dv) in eq_constraints {
                         if callee_dv.substitute(&callee_to_caller)? != *caller_dv {
                             return Err(anyhow!(ShapeError::mismatched(caller_dv, callee_dv)));
                         }
@@ -650,13 +662,14 @@ impl Model for SignatureModel {
         // for now, just assuming this is the case
         let ret_shape = {
             let Some(returns) = &self.returns else {
+                // TODO: this shouldn't be an error. We need to generalize the effect of a function/method call to allow for no return
                 let err = ShapeError::UninferrableCall {};
                 return Err(anyhow!(err));
             };
 
             match &returns[0] {
                 Variable::Tensor(Shape(shape)) => shape,
-                // TODO: handle possible returns of dimvars, ideally
+                // TODO: handle returning dimvars
                 // return of uninferrablecall should result in Variable::Top return from whatever's
                 // calling this atm
                 _ => return Err(anyhow!(ShapeError::UninferrableCall {})),

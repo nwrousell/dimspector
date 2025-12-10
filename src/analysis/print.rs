@@ -5,7 +5,7 @@ use itertools::Itertools;
 use crate::{
     analysis::{
         AnalysisDomain, FunctionAnalysis, GlobalAnalysis,
-        dimvars::{CanonicalDimVar, DimKind, DimVar},
+        dimvars::{CanonicalDimVar, DimKind, DimVar, NamedPow, Term},
     },
     ir::{
         Function,
@@ -18,14 +18,15 @@ use super::types::{Shape, Variable};
 
 impl fmt::Display for DimVar {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.kind() {
-            DimKind::Concrete(c) => write!(f, "{}", c),
-            DimKind::Named(n) => write!(f, "{}", n),
-            DimKind::Add { left, right } => {
-                write!(f, "{} + {}", *left, *right)
-            }
-            DimKind::Mul { left, right } => write!(f, "{} * {}", *left, *right),
-        }
+        // match self.kind() {
+        //     DimKind::Concrete(c) => write!(f, "{}", c),
+        //     DimKind::Named(n) => write!(f, "{}", n),
+        //     DimKind::Add { left, right } => {
+        //         write!(f, "{} + {}", *left, *right)
+        //     }
+        //     DimKind::Mul { left, right } => write!(f, "{} * {}", *left, *right),
+        // }
+        write!(f, "{}", self.canonical())
     }
 }
 
@@ -74,6 +75,53 @@ impl fmt::Display for GlobalAnalysis {
             write!(f, "{}\n\n", func)?;
         }
         Ok(())
+    }
+}
+
+impl fmt::Display for CanonicalDimVar {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (i, term) in self.0.iter().enumerate() {
+            if i > 0 {
+                write!(f, "+ ")?;
+            }
+            write!(f, "{}", term)?;
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Display for Term {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.variables.is_empty() {
+            write!(f, "{}", self.constant)
+        } else if self.constant == 1 {
+            for np in &self.variables {
+                write!(f, "{}", np)?;
+            }
+            Ok(())
+        } else if self.constant == -1 {
+            write!(f, "-")?;
+            for np in &self.variables {
+                write!(f, "{}", np)?;
+            }
+            Ok(())
+        } else {
+            write!(f, "{}", self.constant)?;
+            for np in &self.variables {
+                write!(f, "{}", np)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+impl fmt::Display for NamedPow {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.pow == 1 {
+            write!(f, "{}", self.variable)
+        } else {
+            write!(f, "{}^{}", self.variable, self.pow)
+        }
     }
 }
 

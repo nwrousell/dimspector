@@ -129,7 +129,7 @@ pub enum DimKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CanonicalDimVar(Vec<Term>);
+pub struct CanonicalDimVar(pub Vec<Term>);
 
 impl CanonicalDimVar {
     /// Sort terms and merge those with the same variables
@@ -174,9 +174,9 @@ impl CanonicalDimVar {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Term {
-    constant: i64,
-    variables: Vec<NamedPow>,
+pub struct Term {
+    pub constant: i64,
+    pub variables: Vec<NamedPow>,
 }
 
 impl Term {
@@ -209,9 +209,9 @@ impl Ord for Term {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct NamedPow {
-    variable: String,
-    pow: u32,
+pub struct NamedPow {
+    pub variable: String,
+    pub pow: u32,
 }
 
 impl NamedPow {
@@ -368,7 +368,8 @@ impl DimVar {
 
         if rhs_can.0.len() != 1 {
             return Err(anyhow!(
-                "division only allowed by a single multiplicative term: {rhs:?}"
+                "division only allowed by a single multiplicative term, but {rhs_can} has {} terms",
+                rhs_can.0.len()
             ));
         }
 

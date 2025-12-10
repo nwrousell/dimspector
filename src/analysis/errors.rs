@@ -1,7 +1,7 @@
 use miette::Diagnostic;
 use thiserror::Error;
 
-use crate::analysis::{DimVar, Shape};
+use crate::analysis::{DimVar, Shape, Variable};
 
 #[derive(Diagnostic, Error, Debug)]
 pub enum ShapeError {
@@ -29,6 +29,9 @@ pub enum ShapeError {
         // #[label("mismatch occurs here")]
         // span: SourceSpan,
     },
+
+    #[error("Rank of tensor one, {rank_1} does not equal rank of tensor two, {rank_2}")]
+    UnequalRank { rank_1: usize, rank_2: usize },
 }
 
 impl ShapeError {
