@@ -165,7 +165,7 @@ impl ModelContext {
             | "torch.special.digamma" => Some(&self.torch.passthrough),
             "torch.sum" => Some(&self.torch.rdx),
             "torch.concat" => Some(&self.torch.concat),
-            "torch.reshape" => Some(&self.torch.reshape),
+            "torch.reshape" | "torch.view" => Some(&self.torch.reshape),
             _ => None,
         }
     }
@@ -611,9 +611,9 @@ impl Model for SignatureModel {
         kwargs: HashMap<String, &Variable>,
         span: SourceSpan,
     ) -> Result<Shape> {
-        let mut callee_to_caller: HashMap<String, DimVar> = HashMap::new();
+        let mut param_to_arg: HashMap<String, DimVar> = HashMap::new();
         for argv in args.iter().zip_longest(self.params.iter()) {
-            let (caller_v, callee_v) = match argv {
+            let (arg_v, param_v) = match argv {
                 EitherOrBoth::Both(arg_v, param) => {
                     let Some(param_v) = &param.1 else {
                         // param doesn't have tensor annotation, skip
@@ -633,36 +633,62 @@ impl Model for SignatureModel {
                 }
                 EitherOrBoth::Left(_) => unreachable!("args should not be longer than params"),
             };
-            match (caller_v, callee_v) {
-                (Variable::Tensor(Shape(caller_dims)), Variable::Tensor(Shape(callee_dims))) => {
-                    if caller_dims.len() != callee_dims.len() {
+            match (arg_v, param_v) {
+                (Variable::DimVar(arg_dv), Variable::DimVar(param_dvar)) => {
+                    match param_dvar.kind() {
+                        DimKind::Named(name) => {
+                            if let Some(prev_arg_dv) = param_to_arg.get(&name) {
+                                // TODO: we see a caller side mismatch here, do something with it
+                                if prev_arg_dv != arg_dv {
+                                    return Err(anyhow!(ShapeError::mismatched(
+                                        prev_arg_dv,
+                                        arg_dv,
+                                        span
+                                    )));
+                                }
+                            } else {
+                                param_to_arg.insert(name, arg_dv.clone());
+                            }
+                        }
+                        // nothing to do, as if we enforce that there is a singleton of each dvar in params,
+                        // the above case will insert it into the map
+                        _ => (),
+                    }
+                }
+                (Variable::Tensor(arg_shape), Variable::Tensor(param_shape)) => {
+                    let arg_dims = &arg_shape.0;
+                    let param_dims = &param_shape.0;
+                    if arg_dims.len() != param_dims.len() {
                         // TODO: in the future we should handle ellipsis
-                        return Err(anyhow!(ShapeError::UnequalRank {
-                            rank_1: caller_dims.len(),
-                            rank_2: callee_dims.len()
-                        }));
+                        return Err(anyhow!(ShapeError::unequal_rank(
+                            arg_shape,
+                            param_shape,
+                            arg_dims.len(),
+                            param_dims.len(),
+                            span,
+                        )));
                     }
 
                     let mut eq_constraints: Vec<(&DimVar, &DimVar)> = Vec::new();
 
-                    for (caller_dv, callee_dv) in caller_dims.iter().zip(callee_dims.iter()) {
-                        match callee_dv.kind() {
+                    for (arg_dv, param_dv) in arg_dims.iter().zip(param_dims.iter()) {
+                        match param_dv.kind() {
                             DimKind::Named(name) => {
-                                if let Some(prev_caller_dv) = callee_to_caller.get(&name) {
+                                if let Some(prev_arg_dv) = param_to_arg.get(&name) {
                                     // TODO: we see a caller side mismatch here, do something with it
-                                    if prev_caller_dv != caller_dv {
+                                    if prev_arg_dv != arg_dv {
                                         return Err(anyhow!(ShapeError::mismatched(
-                                            prev_caller_dv,
-                                            caller_dv,
+                                            prev_arg_dv,
+                                            arg_dv,
                                             span
                                         )));
                                     }
                                 } else {
-                                    callee_to_caller.insert(name, caller_dv.clone());
+                                    param_to_arg.insert(name, arg_dv.clone());
                                 }
                             }
 
-                            _ => eq_constraints.push((caller_dv, callee_dv)),
+                            _ => eq_constraints.push((arg_dv, param_dv)),
                         }
                     }
 
@@ -670,11 +696,9 @@ impl Model for SignatureModel {
                     // (a: T[x-1], b: T[x-1])
                     // need to disallow this ^ by enforcing a singleton DimVar::Named for each symbolic dimvar  in the signature
 
-                    // TODO: handle concrete dimvars for constraints
-
                     // check constraints are good
                     for (caller_dv, callee_dv) in eq_constraints {
-                        if callee_dv.substitute(&callee_to_caller)? != *caller_dv {
+                        if callee_dv.substitute(&param_to_arg)? != *caller_dv {
                             return Err(anyhow!(ShapeError::mismatched(
                                 caller_dv, callee_dv, span
                             )));
@@ -703,7 +727,7 @@ impl Model for SignatureModel {
         };
         let ret_shape = ret_shape
             .iter()
-            .map(|dv| dv.substitute(&callee_to_caller))
+            .map(|dv| dv.substitute(&param_to_arg))
             .collect::<Result<Vec<_>>>()?;
         Ok(Shape(ret_shape))
     }

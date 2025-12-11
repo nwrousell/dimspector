@@ -31,8 +31,17 @@ pub enum ShapeError {
         // span: SourceSpan,
     },
 
-    #[error("Rank of tensor one, {rank_1} does not equal rank of tensor two, {rank_2}")]
-    UnequalRank { rank_1: usize, rank_2: usize },
+    #[error(
+        "Rank of tensor one ({tensor_1}), {rank_1}, does not equal rank of tensor two ({tensor_2}), {rank_2}"
+    )]
+    UnequalRank {
+        tensor_1: Shape,
+        tensor_2: Shape,
+        rank_1: usize,
+        rank_2: usize,
+        #[label("mismatch occurs here")]
+        span: SourceSpan,
+    },
 }
 
 impl ShapeError {
@@ -40,6 +49,22 @@ impl ShapeError {
         Self::MismatchedDims {
             dim1: dim1.clone(),
             dim2: dim2.clone(),
+            span,
+        }
+    }
+
+    pub fn unequal_rank(
+        tensor_1: &Shape,
+        tensor_2: &Shape,
+        rank_1: usize,
+        rank_2: usize,
+        span: SourceSpan,
+    ) -> ShapeError {
+        Self::UnequalRank {
+            tensor_1: tensor_1.clone(),
+            tensor_2: tensor_2.clone(),
+            rank_1,
+            rank_2,
             span,
         }
     }

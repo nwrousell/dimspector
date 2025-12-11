@@ -8,15 +8,16 @@ use petgraph::{
 };
 use rustpython_parser::{
     ast::{
-        Expr as ASTExpr, ExprAttribute, ExprBinOp, ExprCall, ExprCompare, ExprConstant, ExprName,
-        ExprSlice, ExprSubscript, ExprTuple, ExprUnaryOp, Keyword, Stmt as ASTStmt, StmtAssign,
-        StmtExpr, StmtFor, StmtFunctionDef as ASTFunction, StmtIf, StmtReturn, StmtWhile, UnaryOp,
+        Expr as ASTExpr, ExprAttribute, ExprBinOp, ExprCall, ExprCompare, ExprConstant,
+        ExprJoinedStr, ExprList, ExprName, ExprSlice, ExprSubscript, ExprTuple, ExprUnaryOp,
+        Keyword, Stmt as ASTStmt, StmtAssign, StmtAugAssign, StmtExpr, StmtFor,
+        StmtFunctionDef as ASTFunction, StmtIf, StmtReturn, StmtWhile, StmtWith, UnaryOp,
     },
     text_size::TextRange,
 };
 
 use crate::{
-    analysis::DimVar,
+    analysis::{DimKind, DimVar},
     ir::types::{Binop, Constant, ExprKind, Function, Slice},
 };
 use crate::{
@@ -107,6 +108,11 @@ impl LowerBody {
                             if let ASTExpr::Constant(shape_str) = *subscript.slice {
                                 let shape_str = shape_str.value.expect_str();
                                 ty = Variable::Tensor(Shape::from_str(&shape_str));
+                            }
+                        } else if name.id.as_str() == "int" {
+                            if let ASTExpr::Constant(dvar_str) = *subscript.slice {
+                                let dvar = dvar_str.value.expect_str();
+                                ty = Variable::DimVar(DimVar::new(DimKind::Named(dvar)));
                             }
                         }
                     }
@@ -212,6 +218,7 @@ impl LowerBody {
                 value,
                 ..
             }) => {
+                // ! this doesn't work, as tuple assigns are represented as a tuple and not multiple targets
                 // split targets/value into pairs
                 let target_value_pairs = if targets.len() > 1 {
                     if let Some(ExprTuple { elts, .. }) = value.as_tuple_expr() {
@@ -236,6 +243,23 @@ impl LowerBody {
                     self.add_statement(value, Some(target), range);
                 }
             }
+            ASTStmt::AugAssign(StmtAugAssign {
+                op,
+                range,
+                target,
+                value,
+            }) => {
+                let target = self.lower_expr_to_path(*target)?;
+                let value = self.lower_expr_to_expr(*value)?;
+                let expr = Expr::binop(
+                    Expr::path(target.clone(), range),
+                    value.clone(),
+                    op.into(),
+                    range,
+                );
+                self.add_statement(expr, Some(target), range);
+            }
+
             ASTStmt::Expr(StmtExpr { value, range }) => {
                 let value = self.lower_expr_to_expr(*value)?;
                 self.add_statement(value, None, range);
@@ -356,7 +380,18 @@ impl LowerBody {
                 self.finish_block(None, ret);
             }
 
-            _ => todo!("unhandled statement"),
+            ASTStmt::With(StmtWith {
+                body, items, range, ..
+            }) => {
+                let exprs = items.into_iter().map(|i| i.context_expr);
+                for expr in exprs {
+                    let expr = self.lower_expr_to_expr(expr)?;
+                    self.add_statement(expr, None, range);
+                }
+                self.lower_body(body)?
+            }
+
+            _ => todo!("unhandled statement: {stmt:?}"),
         }
 
         Ok(())
@@ -532,7 +567,21 @@ impl LowerBody {
                 Ok(Expr::index(range, expr, index))
             }
 
-            _ => todo!("unhandled expr"),
+            ASTExpr::JoinedStr(ExprJoinedStr { range, .. }) => {
+                Ok(Expr::constant(range, Constant::None))
+            }
+
+            ASTExpr::List(ExprList { elts, range, .. }) => {
+                let elts = elts
+                    .into_iter()
+                    .map(|e| self.lower_expr_to_expr(e))
+                    .collect::<Result<Vec<Expr>>>()?;
+
+                // TODO: might be good to rename Tuple to Seq
+                Ok(Expr::tuple(elts, range))
+            }
+
+            _ => todo!("unhandled expr: {expr:#?}"),
         }
     }
 
@@ -558,8 +607,9 @@ impl LowerBody {
                 Ok(path)
             }
             ASTExpr::Name(ExprName { id, .. }) => Ok(vec![id.to_string()]),
-            ASTExpr::Call(ExprCall { .. }) => {
-                todo!("call as part of path")
+            ASTExpr::Call(ExprCall { func, .. }) => {
+                let path = self.lower_expr_to_path_inner(*func)?;
+                Ok(path)
             }
 
             ASTExpr::Slice(ExprSlice { .. }) => todo!("slice as part of path"),
@@ -568,10 +618,3 @@ impl LowerBody {
         }
     }
 }
-
-// we want field sensitivity, at least for tuples
-// how to do this with our identifier/path -> Variable mapping?
-
-// all dot paths (self.foo, a.flatten()) is just represented as Attribute chains.
-// I probably should untangle the first one into the path 'self.foo' and the second
-// into the target 'a', method of 'flatten'

@@ -216,7 +216,17 @@ impl FunctionAnalysis {
                             }
                         }
                     }
-                    Some(_) => todo!(),
+                    Some(receiver) => {
+                        // currently assuming method calls don't change shape of tensors
+                        match domain.get(receiver) {
+                            Some(vals) => {
+                                out_vars.extend(vals.clone());
+                            }
+                            None => {
+                                out_vars.insert(Variable::Top);
+                            }
+                        };
+                    }
                 }
 
                 Ok(out_vars)
