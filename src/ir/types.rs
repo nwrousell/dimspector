@@ -2,6 +2,7 @@ use std::{cmp::Ordering, collections::HashMap};
 
 use crate::{analysis::DimVar, utils};
 use itertools::Either;
+use miette::{SourceOffset, SourceSpan};
 use petgraph::{
     Direction,
     graph::{DiGraph, NodeIndex},
@@ -244,7 +245,13 @@ pub struct Statement {
 #[derive(Clone, Debug)]
 pub struct Expr {
     pub kind: ExprKind,
-    pub range: TextRange,
+    pub span: SourceSpan,
+}
+
+pub fn range_to_span(range: TextRange) -> SourceSpan {
+    let start = SourceOffset::from(range.start().to_usize());
+    let length = range.len().to_usize();
+    SourceSpan::new(start, length)
 }
 
 impl Expr {
@@ -255,7 +262,7 @@ impl Expr {
                 right: Box::new(right),
                 op,
             },
-            range,
+            span: range_to_span(range),
         }
     }
 
@@ -273,21 +280,21 @@ impl Expr {
                 pos_args,
                 keyword_args,
             },
-            range,
+            span: range_to_span(range),
         }
     }
 
     pub fn constant(range: TextRange, constant: Constant) -> Expr {
         Expr {
             kind: ExprKind::Constant(constant),
-            range,
+            span: range_to_span(range),
         }
     }
 
     pub fn path(path: Path, range: TextRange) -> Expr {
         Expr {
             kind: ExprKind::Path(path),
-            range,
+            span: range_to_span(range),
         }
     }
 
@@ -297,26 +304,16 @@ impl Expr {
                 receiver: Box::new(expr),
                 index,
             },
-            range,
+            span: range_to_span(range),
         }
     }
 
     pub fn tuple(elts: Vec<Expr>, range: TextRange) -> Expr {
         Expr {
             kind: ExprKind::Tuple(elts),
-            range,
+            span: range_to_span(range),
         }
     }
-
-    // pub fn slice(lower: Option<Expr>, upper: Option<Expr>, range: TextRange) -> Expr {
-    //     Expr {
-    //         kind: ExprKind::Slice {
-    //             lower: lower.map(Box::new),
-    //             upper: upper.map(Box::new),
-    //         },
-    //         range,
-    //     }
-    // }
 }
 
 #[derive(Clone, Debug)]

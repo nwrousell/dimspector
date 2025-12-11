@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use itertools::{Either, Itertools};
+use miette::SourceSpan;
 pub use types::{Shape, Variable};
 
 pub use crate::analysis::dimvars::{DimKind, DimVar};
@@ -17,6 +18,7 @@ use crate::ir::types::{Binop, Constant, ExprKind, Location, Slice};
 use crate::ir::{Expr, Parameter, Path, Statement, Terminator};
 use crate::ir::{Function, Program};
 use anyhow::Result;
+pub use errors::ShapeError;
 type AnalysisDomain = HashMap<Path, HashSet<Variable>>;
 
 pub use print::{ir_with_inferred_shapes_to_string, print_ir_with_inferred_shapes};
@@ -103,6 +105,7 @@ impl FunctionAnalysis {
         left: &Expr,
         right: &Expr,
         op: Binop,
+        span: SourceSpan,
     ) -> Result<HashSet<Variable>> {
         let l_vars = self.eval_expr(domain, left)?;
         let r_vars = self.eval_expr(domain, right)?;
@@ -116,18 +119,18 @@ impl FunctionAnalysis {
                 (Variable::Top, _) | (_, Variable::Top) => Variable::Top,
                 (Variable::Tensor(_), Variable::Tensor(_)) => {
                     if is_matmul {
-                        let out_shape = self
-                            .models
-                            .torch
-                            .matmul
-                            .infer(vec![l_var, r_var], HashMap::new())?;
+                        let out_shape = self.models.torch.matmul.infer(
+                            vec![l_var, r_var],
+                            HashMap::new(),
+                            span,
+                        )?;
                         Variable::Tensor(out_shape)
                     } else {
-                        let out_shape = self
-                            .models
-                            .torch
-                            .broadcast
-                            .infer(vec![l_var, r_var], HashMap::new())?;
+                        let out_shape = self.models.torch.broadcast.infer(
+                            vec![l_var, r_var],
+                            HashMap::new(),
+                            span,
+                        )?;
                         Variable::Tensor(out_shape)
                     }
                 }
@@ -158,7 +161,9 @@ impl FunctionAnalysis {
 
     fn eval_expr(&mut self, domain: &AnalysisDomain, expr: &Expr) -> Result<HashSet<Variable>> {
         match &expr.kind {
-            ExprKind::Binop { left, right, op } => self.eval_binop(domain, left, right, *op),
+            ExprKind::Binop { left, right, op } => {
+                self.eval_binop(domain, left, right, *op, expr.span)
+            }
             ExprKind::Call {
                 receiver,
                 function,
@@ -199,8 +204,9 @@ impl FunctionAnalysis {
                                     if any_top {
                                         out_vars.insert(Variable::Top);
                                     } else {
-                                        out_vars
-                                            .insert(Variable::Tensor(model.infer(args, kwargs)?));
+                                        out_vars.insert(Variable::Tensor(
+                                            model.infer(args, kwargs, expr.span)?,
+                                        ));
                                     }
                                 }
                             }

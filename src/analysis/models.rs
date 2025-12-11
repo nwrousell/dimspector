@@ -7,6 +7,7 @@ use std::{collections::HashMap, sync::LazyLock};
 use anyhow::{Result, anyhow};
 use itertools::EitherOrBoth::{self, Both, Left, Right};
 use itertools::Itertools;
+use miette::SourceSpan;
 
 use crate::analysis::errors::ShapeError;
 use crate::analysis::{DimKind, DimVar, Shape, Variable};
@@ -27,12 +28,9 @@ macro_rules! get_args {
     };
 }
 
-fn constraint_equal(dim1: &DimVar, dim2: &DimVar) -> Result<()> {
+fn constraint_equal(dim1: &DimVar, dim2: &DimVar, span: SourceSpan) -> Result<()> {
     if dim1 != dim2 {
-        let err = ShapeError::MismatchedDims {
-            dim1: dim1.clone(),
-            dim2: dim2.clone(),
-        };
+        let err = ShapeError::mismatched(dim1, dim2, span);
 
         Err(anyhow!(err))
     } else {
@@ -97,7 +95,12 @@ impl Default for TorchModels {
 }
 
 pub trait Model {
-    fn infer(&self, args: Vec<&Variable>, kwargs: HashMap<String, &Variable>) -> Result<Shape>;
+    fn infer(
+        &self,
+        args: Vec<&Variable>,
+        kwargs: HashMap<String, &Variable>,
+        span: SourceSpan,
+    ) -> Result<Shape>;
 }
 
 impl ModelContext {
@@ -209,7 +212,12 @@ type Signature = Vec<(String, Option<Variable>)>;
 pub struct BroadcastModel;
 
 impl Model for BroadcastModel {
-    fn infer(&self, args: Vec<&Variable>, kwargs: HashMap<String, &Variable>) -> Result<Shape> {
+    fn infer(
+        &self,
+        args: Vec<&Variable>,
+        kwargs: HashMap<String, &Variable>,
+        span: SourceSpan,
+    ) -> Result<Shape> {
         let args = resolve_args(args, kwargs, INPUT_OTHER_SIGNATURE.iter().cloned());
         let (l_shape, r_shape) = get_args!(args, Matmul,
             input: as_shape_dims => "Tensor",
@@ -225,7 +233,7 @@ impl Model for BroadcastModel {
                     } else if r_dim.is_one() {
                         l_dim.clone()
                     } else {
-                        constraint_equal(l_dim, r_dim)?;
+                        constraint_equal(l_dim, r_dim, span)?;
                         l_dim.clone()
                     }
                 }
@@ -245,7 +253,12 @@ static INPUT_OTHER_SIGNATURE: LazyLock<Signature> =
     LazyLock::new(|| vec![("input".to_string(), None), ("other".to_string(), None)]);
 
 impl Model for MatmulModel {
-    fn infer(&self, args: Vec<&Variable>, kwargs: HashMap<String, &Variable>) -> Result<Shape> {
+    fn infer(
+        &self,
+        args: Vec<&Variable>,
+        kwargs: HashMap<String, &Variable>,
+        span: SourceSpan,
+    ) -> Result<Shape> {
         // TODO: also deal with out (mutates)
         let args = resolve_args(args, kwargs, INPUT_OTHER_SIGNATURE.iter().cloned());
         let (input_shape, other_shape) = get_args!(args, Matmul,
@@ -260,25 +273,25 @@ impl Model for MatmulModel {
 
             // dot product
             (1, 1) => {
-                constraint_equal(&input_shape[0], &other_shape[0])?;
+                constraint_equal(&input_shape[0], &other_shape[0], span)?;
                 Ok(Shape(vec![])) // Scalar result
             }
 
             // matrix-matrix
             (2, 2) => {
-                constraint_equal(&input_shape[1], &other_shape[0])?;
+                constraint_equal(&input_shape[1], &other_shape[0], span)?;
                 Ok(Shape(vec![input_shape[0].clone(), other_shape[1].clone()]))
             }
 
             // prepend 1, multiply, remove prepended dim
             (1, 2) => {
-                constraint_equal(&input_shape[0], &other_shape[0])?;
+                constraint_equal(&input_shape[0], &other_shape[0], span)?;
                 Ok(Shape(vec![other_shape[1].clone()]))
             }
 
             // matrix-vector product
             (2, 1) => {
-                constraint_equal(&input_shape[1], &other_shape[0])?;
+                constraint_equal(&input_shape[1], &other_shape[0], span)?;
                 Ok(Shape(vec![input_shape[0].clone()]))
             }
 
@@ -320,7 +333,7 @@ impl Model for MatmulModel {
                 };
 
                 // Check matrix dimension constraint: input[-1] == other[-2]
-                constraint_equal(&input_matrix.1[0], &other_matrix.0[0])?;
+                constraint_equal(&input_matrix.1[0], &other_matrix.0[0], span)?;
 
                 // Broadcast batch dimensions (for now, just take the longer one)
                 // In a full implementation, we'd need proper broadcasting logic
@@ -358,7 +371,12 @@ static SINGLE_TENSOR_INPUT_SIGNATURE: LazyLock<Signature> =
 // The base model for functions that do an element wise operation, preserving shape
 // This should be fine for most activation like functions
 impl Model for PassthroughModel {
-    fn infer(&self, args: Vec<&Variable>, kwargs: HashMap<String, &Variable>) -> Result<Shape> {
+    fn infer(
+        &self,
+        args: Vec<&Variable>,
+        kwargs: HashMap<String, &Variable>,
+        _span: SourceSpan,
+    ) -> Result<Shape> {
         let args = resolve_args(args, kwargs, SINGLE_TENSOR_INPUT_SIGNATURE.iter().cloned());
         let input_shape = get_args!(args, Eltwise,
             input: as_shape => "Tensor",
@@ -378,7 +396,12 @@ static RDX_SIGNATURE: LazyLock<Signature> = LazyLock::new(|| {
 });
 
 impl Model for RdxModel {
-    fn infer(&self, args: Vec<&Variable>, kwargs: HashMap<String, &Variable>) -> Result<Shape> {
+    fn infer(
+        &self,
+        args: Vec<&Variable>,
+        kwargs: HashMap<String, &Variable>,
+        _span: SourceSpan,
+    ) -> Result<Shape> {
         let args = resolve_args(args, kwargs, RDX_SIGNATURE.iter().cloned());
         let input_shape = get_args!(args, Matmul,
             input: as_shape_dims => "Tensor",
@@ -451,7 +474,12 @@ static CONCAT_SIGNATURE: LazyLock<Signature> = LazyLock::new(|| {
 });
 
 impl Model for ConcatModel {
-    fn infer(&self, args: Vec<&Variable>, kwargs: HashMap<String, &Variable>) -> Result<Shape> {
+    fn infer(
+        &self,
+        args: Vec<&Variable>,
+        kwargs: HashMap<String, &Variable>,
+        span: SourceSpan,
+    ) -> Result<Shape> {
         let args = resolve_args(args, kwargs, CONCAT_SIGNATURE.iter().cloned());
         let (tensors, dim) = get_args!(args, Concat,
             tensors: as_tuple => "Tuple",
@@ -495,7 +523,7 @@ impl Model for ConcatModel {
                         if i == dim {
                             Ok(c_dv.clone() + dv.clone())
                         } else if c_dv != dv {
-                            Err(anyhow!(ShapeError::mismatched(c_dv, dv)))
+                            Err(anyhow!(ShapeError::mismatched(c_dv, dv, span)))
                         } else {
                             Ok(c_dv.clone())
                         }
@@ -513,7 +541,12 @@ static RESHAPE_SIGNATURE: LazyLock<Signature> =
     LazyLock::new(|| vec![("input".to_string(), None), ("shape".to_string(), None)]);
 
 impl Model for ReshapeModel {
-    fn infer(&self, args: Vec<&Variable>, kwargs: HashMap<String, &Variable>) -> Result<Shape> {
+    fn infer(
+        &self,
+        args: Vec<&Variable>,
+        kwargs: HashMap<String, &Variable>,
+        _span: SourceSpan,
+    ) -> Result<Shape> {
         let args = resolve_args(args, kwargs, RESHAPE_SIGNATURE.iter().cloned());
         let (src_shape, tgt_shape) = get_args!(args, Concat,
             input: as_shape_dims => "Tensor",
@@ -587,7 +620,12 @@ impl SignatureModel {
     }
 }
 impl Model for SignatureModel {
-    fn infer(&self, args: Vec<&Variable>, kwargs: HashMap<String, &Variable>) -> Result<Shape> {
+    fn infer(
+        &self,
+        args: Vec<&Variable>,
+        kwargs: HashMap<String, &Variable>,
+        span: SourceSpan,
+    ) -> Result<Shape> {
         let mut callee_to_caller: HashMap<String, DimVar> = HashMap::new();
         for argv in args.iter().zip_longest(self.params.iter()) {
             let (caller_v, callee_v) = match argv {
@@ -630,7 +668,8 @@ impl Model for SignatureModel {
                                     if prev_caller_dv != caller_dv {
                                         return Err(anyhow!(ShapeError::mismatched(
                                             prev_caller_dv,
-                                            caller_dv
+                                            caller_dv,
+                                            span
                                         )));
                                     }
                                 } else {
@@ -651,7 +690,9 @@ impl Model for SignatureModel {
                     // check constraints are good
                     for (caller_dv, callee_dv) in eq_constraints {
                         if callee_dv.substitute(&callee_to_caller)? != *caller_dv {
-                            return Err(anyhow!(ShapeError::mismatched(caller_dv, callee_dv)));
+                            return Err(anyhow!(ShapeError::mismatched(
+                                caller_dv, callee_dv, span
+                            )));
                         }
                     }
                 }

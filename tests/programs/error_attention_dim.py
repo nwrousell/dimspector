@@ -18,6 +18,5 @@ class T(Generic(str)): ...
 def attention_wrong_seq(
     scores: T["batch heads seq_q seq_k"], v: T["batch heads seq_v d"]
 ):
-    """Error: seq_k != seq_v means scores @ v dimension mismatch."""
     out = scores @ v
     return out

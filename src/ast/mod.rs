@@ -1,4 +1,4 @@
-use miette::NamedSource;
+use miette::{NamedSource, SourceCode};
 use rustpython_parser::{self, Mode};
 use std::{
     fs,
@@ -24,10 +24,10 @@ impl Input {
     //     &self.path
     // }
 
-    // /// View the source file as a Miette [`SourceCode`] for getting eg line info.
-    // pub fn as_source(&self) -> impl SourceCode {
-    //     self.contents.as_str()
-    // }
+    /// View the source file as a Miette [`SourceCode`] for getting eg line info.
+    pub fn as_source(&self) -> impl SourceCode {
+        self.contents.as_str()
+    }
 
     /// Transform into a Miette [`NamedSource`] for diagnostic reporting.
     pub fn into_named_source(self) -> NamedSource<String> {

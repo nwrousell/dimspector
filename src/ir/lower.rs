@@ -18,7 +18,7 @@ use rustpython_parser::{
 
 use crate::{
     analysis::DimVar,
-    ir::types::{Binop, Constant, DimRange, ExprKind, Function, Slice},
+    ir::types::{Binop, Constant, DimRange, ExprKind, Function, Slice, range_to_span},
 };
 use crate::{
     analysis::{Shape, Variable},
@@ -513,7 +513,7 @@ impl LowerBody {
                 match (op, &operand.kind) {
                     (UnaryOp::USub, ExprKind::Constant(c)) => Ok(Expr {
                         kind: ExprKind::Constant(c.negate_if_num().unwrap()),
-                        range: operand.range,
+                        span: operand.span,
                     }),
                     _ => Ok(operand),
                 }
