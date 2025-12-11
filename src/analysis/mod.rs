@@ -216,7 +216,7 @@ impl FunctionAnalysis {
                             }
                         }
                     }
-                    Some(receiver) => todo!(),
+                    Some(_) => todo!(),
                 }
 
                 Ok(out_vars)
@@ -427,6 +427,20 @@ impl FunctionAnalysis {
     }
 
     fn handle_term(&mut self, domain: &mut AnalysisDomain, term: &Terminator) -> Result<()> {
+        match term {
+            Terminator::CondJump { cond, .. } => {
+                if let Some(expr) = cond {
+                    self.eval_expr(domain, expr)?;
+                }
+            }
+            Terminator::Return(expr) => {
+                if let Some(expr) = expr {
+                    self.eval_expr(domain, expr)?;
+                }
+            }
+            Terminator::Jump(_) => (),
+        }
+
         Ok(())
     }
 

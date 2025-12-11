@@ -1,7 +1,4 @@
 use core::panic;
-use std::cmp::max;
-use std::num;
-use std::path::Path;
 use std::{collections::HashMap, sync::LazyLock};
 
 use anyhow::{Result, anyhow};
@@ -446,18 +443,6 @@ impl Model for RdxModel {
         Ok(Shape(result_dims))
     }
 }
-
-pub struct TensorFromShapeModel;
-
-// we'll have to handle *args in the signature
-
-static TENSOR_FROM_SHAPE_SIGNATURE: LazyLock<Signature> = LazyLock::new(|| {
-    vec![
-        ("input".to_string(), None),
-        ("dim".to_string(), Some(Variable::None)),
-        ("keepdim".to_string(), Some(Variable::None)), // TODO: handle this, default = False
-    ]
-});
 
 pub struct ConcatModel;
 

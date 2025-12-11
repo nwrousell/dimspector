@@ -5,7 +5,7 @@ use itertools::Itertools;
 use crate::{
     analysis::{
         AnalysisDomain, FunctionAnalysis, GlobalAnalysis,
-        dimvars::{CanonicalDimVar, DimKind, DimVar, NamedPow, Term},
+        dimvars::{CanonicalDimVar, DimVar, NamedPow, Term},
     },
     ir::{
         Function,
@@ -18,14 +18,6 @@ use super::types::{Shape, Variable};
 
 impl fmt::Display for DimVar {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // match self.kind() {
-        //     DimKind::Concrete(c) => write!(f, "{}", c),
-        //     DimKind::Named(n) => write!(f, "{}", n),
-        //     DimKind::Add { left, right } => {
-        //         write!(f, "{} + {}", *left, *right)
-        //     }
-        //     DimKind::Mul { left, right } => write!(f, "{} * {}", *left, *right),
-        // }
         write!(f, "{}", self.canonical())
     }
 }

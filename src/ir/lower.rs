@@ -10,15 +10,14 @@ use rustpython_parser::{
     ast::{
         Expr as ASTExpr, ExprAttribute, ExprBinOp, ExprCall, ExprCompare, ExprConstant, ExprName,
         ExprSlice, ExprSubscript, ExprTuple, ExprUnaryOp, Keyword, Stmt as ASTStmt, StmtAssign,
-        StmtAugAssign, StmtExpr, StmtFor, StmtFunctionDef as ASTFunction, StmtIf, StmtReturn,
-        StmtWhile, UnaryOp,
+        StmtExpr, StmtFor, StmtFunctionDef as ASTFunction, StmtIf, StmtReturn, StmtWhile, UnaryOp,
     },
     text_size::TextRange,
 };
 
 use crate::{
     analysis::DimVar,
-    ir::types::{Binop, Constant, DimRange, ExprKind, Function, Slice, range_to_span},
+    ir::types::{Binop, Constant, ExprKind, Function, Slice},
 };
 use crate::{
     analysis::{Shape, Variable},
@@ -348,13 +347,6 @@ impl LowerBody {
                 };
             }
 
-            ASTStmt::AugAssign(StmtAugAssign {
-                op,
-                range,
-                target,
-                value,
-            }) => todo!(),
-            ASTStmt::AnnAssign(stmt_ann_assign) => todo!(),
             ASTStmt::Return(StmtReturn { value, .. }) => {
                 let value = match value {
                     None => None,
@@ -364,29 +356,7 @@ impl LowerBody {
                 self.finish_block(None, ret);
             }
 
-            ASTStmt::Delete(stmt_delete) => todo!(),
-            ASTStmt::Assert(stmt_assert) => todo!(),
-            ASTStmt::Raise(stmt_raise) => todo!(),
-
-            ASTStmt::AsyncFor(stmt_async_for) => todo!(),
-
-            ASTStmt::Import(stmt_import) => todo!(),
-            ASTStmt::ImportFrom(stmt_import_from) => todo!(),
-
-            ASTStmt::FunctionDef(stmt_function_def) => todo!(),
-            ASTStmt::AsyncFunctionDef(stmt_async_function_def) => todo!(),
-            ASTStmt::ClassDef(stmt_class_def) => todo!(),
-            ASTStmt::TypeAlias(stmt_type_alias) => todo!(),
-            ASTStmt::With(stmt_with) => todo!(),
-            ASTStmt::AsyncWith(stmt_async_with) => todo!(),
-            ASTStmt::Match(stmt_match) => todo!(),
-            ASTStmt::Try(stmt_try) => todo!(),
-            ASTStmt::TryStar(stmt_try_star) => todo!(),
-            ASTStmt::Global(stmt_global) => todo!(),
-            ASTStmt::Nonlocal(stmt_nonlocal) => todo!(),
-            ASTStmt::Pass(stmt_pass) => todo!(),
-            ASTStmt::Break(stmt_break) => todo!(),
-            ASTStmt::Continue(stmt_continue) => todo!(),
+            _ => todo!("unhandled statement"),
         }
 
         Ok(())
@@ -543,25 +513,12 @@ impl LowerBody {
                 Ok(bool_expr)
             }
 
-            ASTExpr::List(expr_list) => todo!(),
             ASTExpr::Tuple(ExprTuple { range, elts, .. }) => {
                 let elts = elts
                     .into_iter()
                     .map(|e| self.lower_expr_to_expr(e))
                     .collect::<Result<Vec<Expr>>>()?;
                 Ok(Expr::tuple(elts, range))
-            }
-            ASTExpr::Slice(expr_slice) => {
-                unreachable!();
-                // let expr_lower = match &expr_slice.lower {
-                //     Some(expr_lower) => Some(self.lower_expr_to_expr(*expr_lower.clone())?),
-                //     None => None,
-                // };
-                // let expr_upper = match &expr_slice.upper {
-                //     Some(expr_upper) => Some(self.lower_expr_to_expr(*expr_upper.clone())?),
-                //     None => None,
-                // };
-                // Ok(Expr::slice(expr_lower, expr_upper, expr_slice.range))
             }
             ASTExpr::Subscript(ExprSubscript {
                 value,
@@ -575,22 +532,7 @@ impl LowerBody {
                 Ok(Expr::index(range, expr, index))
             }
 
-            ASTExpr::BoolOp(expr_bool_op) => todo!(),
-            ASTExpr::NamedExpr(expr_named_expr) => todo!(),
-            ASTExpr::Lambda(expr_lambda) => todo!(),
-            ASTExpr::IfExp(expr_if_exp) => todo!(),
-            ASTExpr::Dict(expr_dict) => todo!(),
-            ASTExpr::Set(expr_set) => todo!(),
-            ASTExpr::ListComp(expr_list_comp) => todo!(),
-            ASTExpr::SetComp(expr_set_comp) => todo!(),
-            ASTExpr::DictComp(expr_dict_comp) => todo!(),
-            ASTExpr::GeneratorExp(expr_generator_exp) => todo!(),
-            ASTExpr::Await(expr_await) => todo!(),
-            ASTExpr::Yield(expr_yield) => todo!(),
-            ASTExpr::YieldFrom(expr_yield_from) => todo!(),
-            ASTExpr::FormattedValue(expr_formatted_value) => todo!(),
-            ASTExpr::JoinedStr(expr_joined_str) => todo!(),
-            ASTExpr::Starred(expr_starred) => todo!(),
+            _ => todo!("unhandled expr"),
         }
     }
 

@@ -1,9 +1,0 @@
----
-source: tests/snapshots.rs
-assertion_line: 40
-expression: output
----
-def broadcast(A: [a, b], B: [a, 1]):
-  bb0:
-    C = A + B
-    return

@@ -2,7 +2,7 @@
 
 use std::{
     collections::HashMap,
-    ops::{Add, Div, Mul, Sub},
+    ops::{Add, Mul, Sub},
 };
 
 use anyhow::{Result, anyhow};
