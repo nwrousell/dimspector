@@ -162,6 +162,9 @@ impl ModelContext {
             | "torch.nn.functional.hardshrink"
             | "torch.nn.functional.softshrink"
             | "torch.nn.functional.mish"
+            | "torch.nn.functional.softmax"
+            | "torch.nn.functional.log_softmax"
+            | "torch.softmax"
             | "torch.special.expit"
             | "torch.special.erf"
             | "torch.special.erfc"
@@ -693,6 +696,14 @@ impl Model for ReshapeModel {
 
 pub struct TransposeModel;
 
+static TRANSPOSE_SIGNATURE: LazyLock<Signature> = LazyLock::new(|| {
+    Signature::FixedArity(vec![
+        ("input".to_string(), None),
+        ("dim0".to_string(), None),
+        ("dim1".to_string(), None),
+    ])
+});
+
 impl Model for TransposeModel {
     fn infer(
         &self,
@@ -700,14 +711,30 @@ impl Model for TransposeModel {
         kwargs: HashMap<String, &Variable>,
         _span: SourceSpan,
     ) -> Result<Shape> {
-        let args = resolve_args(args, kwargs, &SINGLE_TENSOR_INPUT_SIGNATURE);
-        let mut input_shape = get_args!(args, Eltwise,
-            input: as_shape => "Tensor",
+        let args = resolve_args(args, kwargs, &TRANSPOSE_SIGNATURE);
+        let (mut input_dims, dim0, dim1) = get_args!(args, Transpose,
+            input: as_shape_dims => "Tensor",
+            dim0: as_concrete_dimvar => "Int",
+            dim1: as_concrete_dimvar => "Int",
         )?;
 
-        input_shape.0.reverse();
+        let rank = input_dims.len() as i64;
 
-        Ok(input_shape)
+        // Normalize negative indices
+        let dim0 = if dim0 < 0 {
+            (rank + dim0) as usize
+        } else {
+            dim0 as usize
+        };
+        let dim1 = if dim1 < 0 {
+            (rank + dim1) as usize
+        } else {
+            dim1 as usize
+        };
+
+        input_dims.swap(dim0, dim1);
+
+        Ok(Shape(input_dims))
     }
 }
 

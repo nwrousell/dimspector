@@ -2,6 +2,15 @@
 source: tests/snapshots.rs
 expression: output
 ---
+def good_bingus(x: [d, e], y: [e, g]):
+  bb0:
+    z: {[d, g]} = foo(x, y)
+    return z
+
+def foo(x: [a, b], y: [b, c], z: s2) -> [a, c]:
+  bb0:
+    return x @ y
+
 def car(x: [b, d]) -> [b, d-1]:
   bb0:
     x: {[b, d-1]} = x[:, :-1]
@@ -12,18 +21,10 @@ def baz(x: [h, w]):
     x: {[h, w-1]} = car(x)
     return x
 
-def tar(x: [b, d], y: [b-1, d]) -> [b, d]:
-  bb0:
-    return x
-
 def bar(x: [b, b]):
   bb0:
     z: {[b, b]} = foo(x, x)
     return z
-
-def foo(x: [a, b], y: [b, c], z: s2) -> [a, c]:
-  bb0:
-    return x @ y
 
 def quz(x: [b, d]):
   bb0:
@@ -31,7 +32,6 @@ def quz(x: [b, d]):
     z: {[b, d]} = tar(x, y)
     return z
 
-def good_bingus(x: [d, e], y: [e, g]):
+def tar(x: [b, d], y: [b-1, d]) -> [b, d]:
   bb0:
-    z: {[d, g]} = foo(x, y)
-    return z
+    return x

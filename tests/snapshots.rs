@@ -65,7 +65,7 @@ fn analyze(path: &Path) -> Result<String> {
                 let mut output = String::new();
                 for (name, facts) in &res.functions {
                     if let Some(func) = ir.functions.iter().find(|f| f.identifier == *name) {
-                        output.push_str(&ir_with_inferred_shapes_to_string(func, facts));
+                        output.push_str(&ir_with_inferred_shapes_to_string(func, facts, None));
                         output.push('\n');
                     }
                 }

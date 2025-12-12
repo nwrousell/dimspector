@@ -481,10 +481,17 @@ impl FunctionAnalysis {
                     domain.join(self.state.entry(pred_loc).or_default());
                 }
             }
-            match func.instr(loc) {
+            let result = match func.instr(loc) {
                 Either::Left(stmt) => self.handle_stmt(&mut domain, stmt),
                 Either::Right(term) => self.handle_term(&mut domain, term),
-            }?;
+            };
+            if let Err(e) = result {
+                eprintln!(
+                    "{}",
+                    print::ir_with_inferred_shapes_to_string(func, self, Some(*loc))
+                );
+                return Err(e);
+            }
             self.state.insert(*loc, domain);
         }
         Ok(())

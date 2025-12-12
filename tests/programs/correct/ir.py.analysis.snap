@@ -2,7 +2,7 @@
 source: tests/snapshots.rs
 expression: output
 ---
-def nested_for(n: s0, m: s1):
+def simple_for(n: s0):
   bb0:
     total: {0} = 0
     jump bb1
@@ -11,14 +11,27 @@ def nested_for(n: s0, m: s1):
   bb3:
     return total
   bb2:
-    jump bb4
+    total: {⟙} = total + i
+    jump bb1
+
+def while_with_if(n: s0):
+  bb0:
+    i: {0} = 0
+    jump bb1
+  bb1:
+    jmp bb2 if i < n else bb3
+  bb3:
+    return i
+  bb2:
+    jmp bb4 if i % 2 == 0 else bb5
+  bb5:
+    i: {1} = i + 1
+    jump bb6
   bb4:
-    jmp bb5 if ? else bb6
+    i: {2} = i + 2
+    jump bb6
   bb6:
     jump bb1
-  bb5:
-    total: {⟙} = total + i + j
-    jump bb4
 
 def nested_while(n: s0, m: s1):
   bb0:
@@ -41,35 +54,31 @@ def nested_while(n: s0, m: s1):
     j: {1} = j + 1
     jump bb4
 
+def nested_for(n: s0, m: s1):
+  bb0:
+    total: {0} = 0
+    jump bb1
+  bb1:
+    jmp bb2 if ? else bb3
+  bb3:
+    return total
+  bb2:
+    jump bb4
+  bb4:
+    jmp bb5 if ? else bb6
+  bb6:
+    jump bb1
+  bb5:
+    total: {⟙} = total + i + j
+    jump bb4
+
+def single_return():
+  bb0:
+    return 1 + 2
+
 def empty():
   bb0:
     return
-
-def if_else_no_join(a: s0):
-  bb0:
-    jmp bb1 if a else bb2
-  bb2:
-    return 1 - 2
-  bb1:
-    return 1 + 2
-
-def method_vs_func(a: s0):
-  bb0:
-    torch.ones(1, 2)
-    a.reshape(-1)
-    return
-
-def if_else_join(a: s0):
-  bb0:
-    jmp bb1 if a else bb2
-  bb2:
-    b: {2} = 2
-    jump bb3
-  bb1:
-    b: {1} = 1
-    jump bb3
-  bb3:
-    return b
 
 def for_with_if(n: s0):
   bb0:
@@ -90,26 +99,40 @@ def for_with_if(n: s0):
   bb6:
     jump bb1
 
-def simple_for(n: s0):
+def if_else_no_join(a: s0):
   bb0:
-    total: {0} = 0
-    jump bb1
-  bb1:
-    jmp bb2 if ? else bb3
-  bb3:
-    return total
+    jmp bb1 if a else bb2
   bb2:
-    total: {⟙} = total + i
-    jump bb1
+    return 1 - 2
+  bb1:
+    return 1 + 2
+
+def params(a: [a, b], b: [b, c]):
+  bb0:
+    return a @ b
+
+def if_else_join(a: s0):
+  bb0:
+    jmp bb1 if a else bb2
+  bb2:
+    b: {2} = 2
+    jump bb3
+  bb1:
+    b: {1} = 1
+    jump bb3
+  bb3:
+    return b
 
 def single():
   bb0:
     1 + 2
     return
 
-def single_return():
+def method_vs_func(a: s0):
   bb0:
-    return 1 + 2
+    torch.ones(1, 2)
+    a.reshape(-1)
+    return
 
 def simple_while(n: s0):
   bb0:
@@ -121,27 +144,4 @@ def simple_while(n: s0):
     return i
   bb2:
     i: {1} = i + 1
-    jump bb1
-
-def params(a: [a, b], b: [b, c]):
-  bb0:
-    return a @ b
-
-def while_with_if(n: s0):
-  bb0:
-    i: {0} = 0
-    jump bb1
-  bb1:
-    jmp bb2 if i < n else bb3
-  bb3:
-    return i
-  bb2:
-    jmp bb4 if i % 2 == 0 else bb5
-  bb5:
-    i: {1} = i + 1
-    jump bb6
-  bb4:
-    i: {2} = i + 2
-    jump bb6
-  bb6:
     jump bb1

@@ -63,7 +63,7 @@ fn run(file: PathBuf) -> Result<()> {
 
     for (name, facts) in &res.functions {
         let func = ir.functions.iter().find(|f| f.identifier == *name).unwrap();
-        print_ir_with_inferred_shapes(func, facts);
+        print_ir_with_inferred_shapes(func, facts, None);
         println!("\n")
     }
 

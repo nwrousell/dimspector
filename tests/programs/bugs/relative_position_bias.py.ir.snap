@@ -1,0 +1,22 @@
+---
+source: tests/snapshots.rs
+expression: output
+---
+def relative_attention_cross(x_q: [batch, seq_q, d_model], x_kv: [batch, seq_k, d_model], W_q: [d_model, heads, d_k], W_k: [d_model, heads, d_k], W_v: [d_model, heads, d_v], rel_pos_bias: [seq_k, seq_q]):
+  bb0:
+    'Cross-attention with relative position bias.'
+    batch = x_q.shape[0]
+    seq_q = x_q.shape[1]
+    seq_k = x_kv.shape[1]
+    d_model = x_q.shape[2]
+    heads = W_q.shape[1]
+    d_k = W_q.shape[2]
+    d_v = W_v.shape[2]
+    query = torch.transpose(torch.reshape(x_q @ torch.reshape(W_q, (d_model, -1)), (batch, seq_q, heads, d_k)), 1, 2)
+    key = torch.transpose(torch.reshape(x_kv @ torch.reshape(W_k, (d_model, -1)), (batch, seq_k, heads, d_k)), 1, 2)
+    value = torch.transpose(torch.reshape(x_kv @ torch.reshape(W_v, (d_model, -1)), (batch, seq_k, heads, d_v)), 1, 2)
+    scores = query @ torch.transpose(key, -1, -2)
+    biased = scores + rel_pos_bias
+    weights = torch.softmax(biased, dim=-1)
+    out = weights @ value
+    return out

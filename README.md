@@ -33,6 +33,7 @@ cargo insta test
     - [ ] unsqueeze / squeeze / expand_dims
     - [x] reshape/transpose
     - [ ] flatten/permute
+    - [ ] einsum, rearrange
 
 - [ ] DimVar folding / flow from .shape/.size
     - [x] .shape - X.shape - special-cased in Path lookup

@@ -139,7 +139,11 @@ fn format_annotation(domain: &AnalysisDomain, target: &Path) -> String {
 }
 
 #[allow(dead_code)]
-pub fn ir_with_inferred_shapes_to_string(ir: &Function, func_facts: &FunctionAnalysis) -> String {
+pub fn ir_with_inferred_shapes_to_string(
+    ir: &Function,
+    func_facts: &FunctionAnalysis,
+    stop_at: Option<Location>,
+) -> String {
     let mut output = String::new();
 
     write!(output, "def {}(", ir.identifier).unwrap();
@@ -158,7 +162,7 @@ pub fn ir_with_inferred_shapes_to_string(ir: &Function, func_facts: &FunctionAna
     }
     output.push_str(":\n");
 
-    for block_idx in ir.blocks() {
+    'outer: for block_idx in ir.blocks() {
         let block = ir.data(block_idx);
         let mut block_content = String::new();
 
@@ -167,7 +171,18 @@ pub fn ir_with_inferred_shapes_to_string(ir: &Function, func_facts: &FunctionAna
                 block: block_idx,
                 instr: instr_idx,
             };
-            let domain = func_facts.state.get(&loc).unwrap();
+
+            if let Some(stop) = stop_at {
+                if loc == stop {
+                    write!(output, "  {}:\n", block_idx).unwrap();
+                    output.push_str(&indent(indent(&block_content)));
+                    break 'outer;
+                }
+            }
+
+            let Some(domain) = func_facts.state.get(&loc) else {
+                continue;
+            };
 
             let annotated_stmt = if let Some(target) = &stmt.target {
                 let annotation = format_annotation(domain, target);
@@ -177,6 +192,19 @@ pub fn ir_with_inferred_shapes_to_string(ir: &Function, func_facts: &FunctionAna
             };
 
             writeln!(block_content, "{}", annotated_stmt).unwrap();
+        }
+
+        // Check if terminator is the stop location
+        let term_loc = Location {
+            block: block_idx,
+            instr: block.statements.len(),
+        };
+        if let Some(stop) = stop_at {
+            if term_loc == stop {
+                write!(output, "  {}:\n", block_idx).unwrap();
+                output.push_str(&indent(indent(&block_content)));
+                break 'outer;
+            }
         }
 
         writeln!(block_content, "{}", block.terminator).unwrap();
@@ -189,6 +217,13 @@ pub fn ir_with_inferred_shapes_to_string(ir: &Function, func_facts: &FunctionAna
 }
 
 #[allow(dead_code)]
-pub fn print_ir_with_inferred_shapes(ir: &Function, func_facts: &FunctionAnalysis) {
-    print!("{}", ir_with_inferred_shapes_to_string(ir, func_facts));
+pub fn print_ir_with_inferred_shapes(
+    ir: &Function,
+    func_facts: &FunctionAnalysis,
+    stop_at: Option<Location>,
+) {
+    print!(
+        "{}",
+        ir_with_inferred_shapes_to_string(ir, func_facts, stop_at)
+    );
 }
