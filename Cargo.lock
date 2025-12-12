@@ -232,6 +232,7 @@ dependencies = [
  "itertools 0.14.0",
  "log",
  "miette",
+ "num-integer",
  "num-traits",
  "petgraph",
  "rustpython-parser",

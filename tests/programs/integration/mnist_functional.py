@@ -78,26 +78,27 @@ def main():
     test_images = torch.zeros(num_test, 1, 28, 28)
     test_labels = torch.randint(0, num_classes, (num_test,))
 
-    train_dataset = torch.utils.data.TensorDataset(train_images, train_labels)
-    test_dataset = torch.utils.data.TensorDataset(test_images, test_labels)
-
-    train_loader = torch.utils.data.DataLoader(
-        train_dataset, batch_size=batch_size, shuffle=True
-    )
-    test_loader = torch.utils.data.DataLoader(
-        test_dataset, batch_size=batch_size, shuffle=False
-    )
+    # Move data to device
+    train_images = train_images.to(device)
+    train_labels = train_labels.to(device)
+    test_images = test_images.to(device)
+    test_labels = test_labels.to(device)
 
     # Optimizer
     optimizer = torch.optim.Adam([w1, b1, w2, b2, w3, b3], lr=learning_rate)
 
     # Training loop
+    num_train_batches = (num_train + batch_size - 1) // batch_size
+    num_test_batches = (num_test + batch_size - 1) // batch_size
+
     for epoch in range(1, epochs + 1):
         # Train
         total_train_loss = 0.0
-        for images, labels in train_loader:
-            images = images.to(device)
-            labels = labels.to(device)
+        for i in range(num_train_batches):
+            start = i * batch_size
+            end = min(start + batch_size, num_train)
+            images = train_images[start:end]
+            labels = train_labels[start:end]
 
             optimizer.zero_grad()
             outputs = forward(images, w1, b1, w2, b2, w3, b3)
@@ -107,7 +108,7 @@ def main():
 
             total_train_loss += loss.item()
 
-        train_loss = total_train_loss / len(train_loader)
+        train_loss = total_train_loss / num_train_batches
 
         # Evaluate
         total_test_loss = 0.0
@@ -115,9 +116,11 @@ def main():
         total = 0
 
         with torch.no_grad():
-            for images, labels in test_loader:
-                images = images.to(device)
-                labels = labels.to(device)
+            for i in range(num_test_batches):
+                start = i * batch_size
+                end = min(start + batch_size, num_test)
+                images = test_images[start:end]
+                labels = test_labels[start:end]
 
                 outputs = forward(images, w1, b1, w2, b2, w3, b3)
                 loss = torch.nn.functional.cross_entropy(outputs, labels)
@@ -127,7 +130,7 @@ def main():
                 correct += predicted.eq(labels).sum().item()
                 total += labels.shape[0]
 
-        test_loss = total_test_loss / len(test_loader)
+        test_loss = total_test_loss / num_test_batches
         test_acc = correct / total
 
         print(

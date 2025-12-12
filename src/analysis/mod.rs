@@ -4,6 +4,8 @@ mod models;
 mod print;
 mod types;
 
+use num_integer::Integer;
+
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -95,6 +97,12 @@ impl FunctionAnalysis {
             Binop::Add => Variable::DimVar(left_dimvar + right_dimvar),
             Binop::Sub => Variable::DimVar(left_dimvar - right_dimvar),
             Binop::Mult => Variable::DimVar(left_dimvar * right_dimvar),
+            Binop::FloorDiv => match (left_dimvar.kind(), right_dimvar.kind()) {
+                (DimKind::Concrete(c1), DimKind::Concrete(c2)) => {
+                    Variable::DimVar(DimVar::new(DimKind::Concrete(c1.div_floor(&c2))))
+                }
+                _ => Variable::Top,
+            },
             _ => Variable::Top,
         }
     }
@@ -324,7 +332,7 @@ impl FunctionAnalysis {
                     .collect::<Result<Vec<_>>>()?;
 
                 let mut set = HashSet::new();
-                for (var, index) in vars
+                'possible_slices_loop: for (var, index) in vars
                     .iter()
                     .cartesian_product(indices.iter().multi_cartesian_product())
                 {
@@ -342,7 +350,11 @@ impl FunctionAnalysis {
                                             None => DimVar {
                                                 kind: DimKind::Concrete(0),
                                             },
-                                            _ => unreachable!("bad lower bound"),
+                                            _ => {
+                                                // bound doesn't make sense
+                                                set.insert(Variable::Top);
+                                                continue 'possible_slices_loop;
+                                            }
                                         };
                                         let u_bound = match upper {
                                             Some(Variable::DimVar(dvar)) => match dvar.kind() {
@@ -356,7 +368,11 @@ impl FunctionAnalysis {
                                                 _ => dvar.clone(),
                                             },
                                             None => dims[i].clone(),
-                                            _ => unreachable!("bad upper bound"),
+                                            _ => {
+                                                // bound doesn't make sense
+                                                set.insert(Variable::Top);
+                                                continue 'possible_slices_loop;
+                                            }
                                         };
 
                                         out_dims.push(u_bound - l_bound)

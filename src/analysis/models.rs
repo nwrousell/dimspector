@@ -76,6 +76,9 @@ pub struct TorchModels {
     pub broadcast: BroadcastModel,
     pub concat: ConcatModel,
     pub reshape: ReshapeModel,
+    pub tranpose: TransposeModel,
+    pub tensor_from_size: TensorFromSizeModel,
+    pub randint: RandIntModel,
 }
 
 impl Default for TorchModels {
@@ -87,6 +90,9 @@ impl Default for TorchModels {
             broadcast: BroadcastModel,
             concat: ConcatModel,
             reshape: ReshapeModel,
+            tranpose: TransposeModel,
+            tensor_from_size: TensorFromSizeModel,
+            randint: RandIntModel,
         }
     }
 }
@@ -166,6 +172,10 @@ impl ModelContext {
             "torch.sum" => Some(&self.torch.rdx),
             "torch.concat" => Some(&self.torch.concat),
             "torch.reshape" | "torch.view" => Some(&self.torch.reshape),
+            "torch.transpose" => Some(&self.torch.tranpose),
+            "torch.zeros" | "torch.ones" | "torch.empty" | "torch.rand" | "torch.randn"
+            | "torch.full" => Some(&self.torch.tensor_from_size),
+            "torch.randint" => Some(&self.torch.randint),
             _ => None,
         }
     }
@@ -183,28 +193,111 @@ impl ModelContext {
 pub fn resolve_args(
     args: Vec<&Variable>,
     kwargs: HashMap<String, &Variable>,
-    signature: impl Iterator<Item = (String, Option<Variable>)>,
+    signature: &Signature,
 ) -> HashMap<String, Variable> {
     let mut mapping = HashMap::new();
+    match signature {
+        Signature::Variadic { kwargs_defaults } => {
+            mapping.insert(
+                "variadic".to_string(),
+                Variable::Tuple(args.into_iter().map(|v| v.clone()).collect()),
+            );
 
-    for (i, (name, default)) in signature.into_iter().enumerate() {
-        let arg = if let Some(pos_arg) = args.get(i) {
-            pos_arg
-        } else if let Some(arg) = kwargs.get(&name) {
-            arg
-        } else if let Some(default_arg) = &default {
-            default_arg
-        } else {
-            panic!("arg not found for function");
-        };
+            for (name, default) in kwargs_defaults.into_iter() {
+                if let Some(arg) = kwargs.get(name) {
+                    mapping.insert(name.clone(), arg.clone().clone());
+                } else {
+                    mapping.insert(name.clone(), default.clone());
+                }
+            }
+        }
+        Signature::FixedArity(params) => {
+            for (i, (name, default)) in params.iter().enumerate() {
+                let arg = if let Some(pos_arg) = args.get(i) {
+                    pos_arg
+                } else if let Some(arg) = kwargs.get(name) {
+                    arg
+                } else if let Some(default_arg) = default {
+                    default_arg
+                } else {
+                    panic!("arg not found for function");
+                };
 
-        mapping.insert(name, arg.clone());
-    }
+                mapping.insert(name.clone(), arg.clone());
+            }
+        }
+    };
 
     mapping
 }
 
-type Signature = Vec<(String, Option<Variable>)>;
+pub enum Signature {
+    Variadic {
+        kwargs_defaults: Vec<(String, Variable)>,
+    },
+    FixedArity(Vec<(String, Option<Variable>)>),
+}
+
+pub struct TensorFromSizeModel;
+
+static VARIADIC_SIZE_SIGNATURE: LazyLock<Signature> = LazyLock::new(|| Signature::Variadic {
+    kwargs_defaults: Vec::new(),
+});
+
+impl Model for TensorFromSizeModel {
+    fn infer(
+        &self,
+        args: Vec<&Variable>,
+        kwargs: HashMap<String, &Variable>,
+        _span: SourceSpan,
+    ) -> Result<Shape> {
+        let args = resolve_args(args, kwargs, &VARIADIC_SIZE_SIGNATURE);
+        let size_tuple = args
+            .get("variadic")
+            .expect("variadic signature always has variadic tuple")
+            .as_tuple()
+            .expect("ditto");
+
+        let dimvars = size_tuple
+            .iter()
+            .map(|v| {
+                if let Variable::DimVar(d) = v {
+                    Ok(d.clone())
+                } else {
+                    Err(anyhow!("non-dimvar being used as a dimvar"))
+                }
+            })
+            .collect::<Result<Vec<DimVar>>>()?;
+
+        Ok(Shape(dimvars))
+    }
+}
+
+pub struct RandIntModel;
+
+static RANDINT_SIGNATURE: LazyLock<Signature> = LazyLock::new(|| {
+    Signature::FixedArity(vec![
+        ("low".to_string(), None),
+        ("high".to_string(), None),
+        ("size".to_string(), None),
+    ])
+});
+
+impl Model for RandIntModel {
+    fn infer(
+        &self,
+        args: Vec<&Variable>,
+        kwargs: HashMap<String, &Variable>,
+        _span: SourceSpan,
+    ) -> Result<Shape> {
+        let args = resolve_args(args, kwargs, &RANDINT_SIGNATURE);
+        let size = get_args!(args, RandInt,
+            size: as_shape_dims => "Tuple",
+        )?;
+
+        Ok(Shape(size))
+    }
+}
 
 pub struct BroadcastModel;
 
@@ -215,7 +308,7 @@ impl Model for BroadcastModel {
         kwargs: HashMap<String, &Variable>,
         span: SourceSpan,
     ) -> Result<Shape> {
-        let args = resolve_args(args, kwargs, INPUT_OTHER_SIGNATURE.iter().cloned());
+        let args = resolve_args(args, kwargs, &INPUT_OTHER_SIGNATURE);
         let (l_shape, r_shape) = get_args!(args, Matmul,
             input: as_shape_dims => "Tensor",
             other: as_shape_dims => "Tensor",
@@ -246,8 +339,12 @@ impl Model for BroadcastModel {
 
 pub struct MatmulModel;
 
-static INPUT_OTHER_SIGNATURE: LazyLock<Signature> =
-    LazyLock::new(|| vec![("input".to_string(), None), ("other".to_string(), None)]);
+static INPUT_OTHER_SIGNATURE: LazyLock<Signature> = LazyLock::new(|| {
+    Signature::FixedArity(vec![
+        ("input".to_string(), None),
+        ("other".to_string(), None),
+    ])
+});
 
 impl Model for MatmulModel {
     fn infer(
@@ -257,7 +354,7 @@ impl Model for MatmulModel {
         span: SourceSpan,
     ) -> Result<Shape> {
         // TODO: also deal with out (mutates)
-        let args = resolve_args(args, kwargs, INPUT_OTHER_SIGNATURE.iter().cloned());
+        let args = resolve_args(args, kwargs, &INPUT_OTHER_SIGNATURE);
         let (input_shape, other_shape) = get_args!(args, Matmul,
             input: as_shape_dims => "Tensor",
             other: as_shape_dims => "Tensor",
@@ -363,7 +460,7 @@ impl Model for MatmulModel {
 
 pub struct PassthroughModel;
 static SINGLE_TENSOR_INPUT_SIGNATURE: LazyLock<Signature> =
-    LazyLock::new(|| vec![("input".to_string(), None)]);
+    LazyLock::new(|| Signature::FixedArity(vec![("input".to_string(), None)]));
 
 // The base model for functions that do an element wise operation, preserving shape
 // This should be fine for most activation like functions
@@ -374,7 +471,7 @@ impl Model for PassthroughModel {
         kwargs: HashMap<String, &Variable>,
         _span: SourceSpan,
     ) -> Result<Shape> {
-        let args = resolve_args(args, kwargs, SINGLE_TENSOR_INPUT_SIGNATURE.iter().cloned());
+        let args = resolve_args(args, kwargs, &SINGLE_TENSOR_INPUT_SIGNATURE);
         let input_shape = get_args!(args, Eltwise,
             input: as_shape => "Tensor",
         )?;
@@ -385,11 +482,11 @@ impl Model for PassthroughModel {
 
 pub struct RdxModel;
 static RDX_SIGNATURE: LazyLock<Signature> = LazyLock::new(|| {
-    vec![
+    Signature::FixedArity(vec![
         ("input".to_string(), None),
         ("dim".to_string(), Some(Variable::None)),
         ("keepdim".to_string(), Some(Variable::None)), // TODO: handle this, default = False
-    ]
+    ])
 });
 
 impl Model for RdxModel {
@@ -399,7 +496,7 @@ impl Model for RdxModel {
         kwargs: HashMap<String, &Variable>,
         _span: SourceSpan,
     ) -> Result<Shape> {
-        let args = resolve_args(args, kwargs, RDX_SIGNATURE.iter().cloned());
+        let args = resolve_args(args, kwargs, &RDX_SIGNATURE);
         let input_shape = get_args!(args, Matmul,
             input: as_shape_dims => "Tensor",
         )?;
@@ -447,7 +544,7 @@ impl Model for RdxModel {
 pub struct ConcatModel;
 
 static CONCAT_SIGNATURE: LazyLock<Signature> = LazyLock::new(|| {
-    vec![
+    Signature::FixedArity(vec![
         ("tensors".to_string(), None),
         (
             "dim".to_string(),
@@ -455,7 +552,7 @@ static CONCAT_SIGNATURE: LazyLock<Signature> = LazyLock::new(|| {
                 kind: DimKind::Concrete(0),
             })),
         ),
-    ]
+    ])
 });
 
 impl Model for ConcatModel {
@@ -465,7 +562,7 @@ impl Model for ConcatModel {
         kwargs: HashMap<String, &Variable>,
         span: SourceSpan,
     ) -> Result<Shape> {
-        let args = resolve_args(args, kwargs, CONCAT_SIGNATURE.iter().cloned());
+        let args = resolve_args(args, kwargs, &CONCAT_SIGNATURE);
         let (tensors, dim) = get_args!(args, Concat,
             tensors: as_tuple => "Tuple",
             dim: as_concrete_dimvar => "Int",
@@ -522,8 +619,12 @@ impl Model for ConcatModel {
 
 pub struct ReshapeModel;
 
-static RESHAPE_SIGNATURE: LazyLock<Signature> =
-    LazyLock::new(|| vec![("input".to_string(), None), ("shape".to_string(), None)]);
+static RESHAPE_SIGNATURE: LazyLock<Signature> = LazyLock::new(|| {
+    Signature::FixedArity(vec![
+        ("input".to_string(), None),
+        ("shape".to_string(), None),
+    ])
+});
 
 impl Model for ReshapeModel {
     fn infer(
@@ -532,7 +633,7 @@ impl Model for ReshapeModel {
         kwargs: HashMap<String, &Variable>,
         _span: SourceSpan,
     ) -> Result<Shape> {
-        let args = resolve_args(args, kwargs, RESHAPE_SIGNATURE.iter().cloned());
+        let args = resolve_args(args, kwargs, &RESHAPE_SIGNATURE);
         let (src_shape, tgt_shape) = get_args!(args, Concat,
             input: as_shape_dims => "Tensor",
             shape: as_shape_dims => "Tuple",
@@ -585,6 +686,26 @@ impl Model for ReshapeModel {
         }
 
         Ok(Shape(tgt_shape))
+    }
+}
+
+pub struct TransposeModel;
+
+impl Model for TransposeModel {
+    fn infer(
+        &self,
+        args: Vec<&Variable>,
+        kwargs: HashMap<String, &Variable>,
+        _span: SourceSpan,
+    ) -> Result<Shape> {
+        let args = resolve_args(args, kwargs, &SINGLE_TENSOR_INPUT_SIGNATURE);
+        let mut input_shape = get_args!(args, Eltwise,
+            input: as_shape => "Tensor",
+        )?;
+
+        input_shape.0.reverse();
+
+        Ok(input_shape)
     }
 }
 
