@@ -1,10 +1,38 @@
+# Dimspector
+An in-development tool to statically infer tensor shapes in PyTorch code. 
+
+## Usage
+
+### Running
+```
+cargo run -- path/to/file.py
+```
+
+### Running tests
+```
+cargo insta test
+```
+
+## Directory structure
+
+- `src/`
+    - `main.rs` - CLI
+    - `ast/` - mostly just wraps [rustpython parser](https://github.com/RustPython/Parser)
+    - `ir/` - types and lowering code for intermediate representation. 
+    - `analysis/`
+        - `mod.rs` - main analysis code
+        - `models.rs` - model definitions
+- `tests/programs/` - test files
+
+## Roadmap
 - [ ] more models
     - [x] nn.functional (softmax, mean, sum)
     - [x] passthrough
-    - [ ] ones, ones_like and friends
+    - [x] ones, ones_like and friends
     - [x] change broadcast to model, use for torch.add, etc.
     - [ ] unsqueeze / squeeze / expand_dims
-    - [ ] reshape/flatten/transpose/permute
+    - [x] reshape/transpose
+    - [ ] flatten/permute
 
 - [ ] DimVar folding / flow from .shape/.size
     - [x] .shape - X.shape - special-cased in Path lookup
@@ -14,13 +42,14 @@
     - [x] Dim Exprs
 - [ ] torch method calls
 - [ ] finish signature model
-    - [ ] handle concrete args
+    - [x] handle concrete args
     - [ ] enforce existence of param with singleton named DimVar for each symbolic DimVar present in signature
     - [ ] Generalize effect of function (optional/tuple/dimvar return type, maybe mutation?)
 - [ ] ellipsis
 
 - [ ] Usability improvements
-    - [ ] miette-like diagnostics (more provenance info?)
+    - [x] miette for code context
+        - [ ] more provenance info 
     - [ ] .pyi stubs
     - [ ] LSP
     - [ ] multiple files
@@ -31,11 +60,11 @@
 - [ ] Flesh out IR
     - [x] Tuples
     - [ ] `break`/`continue`
-    - [ ] Lists?
+    - [x] Lists?
 - [ ] Import resolution
+- [ ] if user has annotated var, check against our inference
 
-
-# Refactor
+### Refactoring
 - [x] Make broadcast_resolve a Model
 - [ ] Set up interning and stop cloning everything everywhere
 - [ ] indexical over locations

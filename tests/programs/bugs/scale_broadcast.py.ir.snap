@@ -1,0 +1,8 @@
+---
+source: tests/snapshots.rs
+expression: output
+---
+def scale_wrong_channels(x: [batch, channels, h, w], scale: [other_channels]):
+  bb0:
+    out = x * scale
+    return out

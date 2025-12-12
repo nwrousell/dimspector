@@ -1,0 +1,9 @@
+---
+source: tests/snapshots.rs
+expression: output
+---
+def mlp_wrong_hidden(x: [batch, d], w1: [d, hidden], w2: [other, d]):
+  bb0:
+    h = x @ w1
+    out = h @ w2
+    return out

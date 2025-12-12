@@ -169,7 +169,9 @@ impl ModelContext {
             | "torch.special.ndtri"
             | "torch.special.logit"
             | "torch.special.digamma" => Some(&self.torch.passthrough),
-            "torch.sum" => Some(&self.torch.rdx),
+            "torch.sum" | "torch.mean" | "torch.prod" | "torch.amax" | "torch.amin"
+            | "torch.std" | "torch.var" | "torch.logsumexp" | "torch.all" | "torch.any"
+            | "torch.nansum" | "torch.nanmean" => Some(&self.torch.rdx),
             "torch.concat" => Some(&self.torch.concat),
             "torch.reshape" | "torch.view" => Some(&self.torch.reshape),
             "torch.transpose" => Some(&self.torch.tranpose),
@@ -205,7 +207,7 @@ pub fn resolve_args(
 
             for (name, default) in kwargs_defaults.into_iter() {
                 if let Some(arg) = kwargs.get(name) {
-                    mapping.insert(name.clone(), arg.clone().clone());
+                    mapping.insert(name.clone(), (*arg).clone());
                 } else {
                     mapping.insert(name.clone(), default.clone());
                 }

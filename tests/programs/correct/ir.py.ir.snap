@@ -48,7 +48,7 @@ def if_else_no_join(a: s0):
 def method_vs_func(a: s0):
   bb0:
     torch.ones(1, 2)
-    a.reshape(1)
+    a.reshape(-1)
     return
 
 

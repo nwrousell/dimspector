@@ -1,0 +1,8 @@
+---
+source: tests/snapshots.rs
+expression: output
+---
+def concat(x: [m, a], y: [m, b], z: [m, c]):
+  bb0:
+    w = torch.concat((x, y, z), dim=1)
+    return w

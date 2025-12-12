@@ -1,0 +1,9 @@
+---
+source: tests/snapshots.rs
+expression: output
+---
+def flatten(x: [b, h, w]):
+  bb0:
+    b = x.shape[0]
+    x = torch.reshape(x, (b, -1))
+    return x

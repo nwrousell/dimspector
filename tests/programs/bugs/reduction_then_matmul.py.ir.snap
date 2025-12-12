@@ -1,0 +1,9 @@
+---
+source: tests/snapshots.rs
+expression: output
+---
+def pool_project_wrong(x: [batch, seq, d], proj: [seq, out]):
+  bb0:
+    pooled = torch.mean(x, dim=1)
+    out = pooled @ proj
+    return out

@@ -1,0 +1,9 @@
+---
+source: tests/snapshots.rs
+expression: output
+---
+def residual_dim_mismatch(x: [batch, d], weight: [d, d_out]):
+  bb0:
+    transformed = x @ weight
+    out = x + transformed
+    return out

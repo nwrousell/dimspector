@@ -1,0 +1,5 @@
+---
+source: tests/snapshots.rs
+expression: output
+---
+analysis error: Mismatched dims: seq != other_batch

@@ -1,0 +1,8 @@
+---
+source: tests/snapshots.rs
+expression: output
+---
+def add_wrong_batch(x: [batch, seq, d], bias: [other_batch, d]):
+  bb0:
+    out = x + bias
+    return out

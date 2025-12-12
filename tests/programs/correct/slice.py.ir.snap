@@ -1,0 +1,10 @@
+---
+source: tests/snapshots.rs
+expression: output
+---
+def token_targets(tokens: [b, t]):
+  bb0:
+    inps = tokens[:1, :-1]
+    targets = tokens[:, 1:]
+    z = inps + targets
+    return (inps, targets)

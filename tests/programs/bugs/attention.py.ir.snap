@@ -1,0 +1,8 @@
+---
+source: tests/snapshots.rs
+expression: output
+---
+def attention_wrong_seq(scores: [batch, heads, seq_q, seq_k], v: [batch, heads, seq_v, d]):
+  bb0:
+    out = scores @ v
+    return out

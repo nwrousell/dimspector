@@ -1,0 +1,43 @@
+---
+source: tests/snapshots.rs
+expression: output
+---
+def foo(x: [a, b], y: [b, c], z: s2) -> [a, c]:
+  bb0:
+    return x @ y
+
+
+def car(x: [b, d]) -> [b, d-1]:
+  bb0:
+    x = x[:, :-1]
+    return x
+
+
+def tar(x: [b, d], y: [b-1, d]) -> [b, d]:
+  bb0:
+    return x
+
+
+def bar(x: [b, b]):
+  bb0:
+    z = foo(x, x)
+    return z
+
+
+def baz(x: [h, w]):
+  bb0:
+    x = car(x)
+    return x
+
+
+def quz(x: [b, d]):
+  bb0:
+    y = x[:-1, :]
+    z = tar(x, y)
+    return z
+
+
+def good_bingus(x: [d, e], y: [e, g]):
+  bb0:
+    z = foo(x, y)
+    return z
