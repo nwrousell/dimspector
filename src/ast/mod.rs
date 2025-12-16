@@ -4,6 +4,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
 };
+use tower_lsp::lsp_types::Position;
 
 use anyhow::Result;
 
@@ -12,11 +13,41 @@ mod types;
 
 pub use types::Program;
 
+/// Index for fast byte offset -> line/column conversion.
+#[derive(Clone, Debug)]
+pub struct LineIndex {
+    /// Byte offset of the start of each line (line 0 starts at offset 0)
+    line_starts: Vec<usize>,
+}
+
+impl LineIndex {
+    pub fn new(text: &str) -> Self {
+        let mut line_starts = vec![0];
+        for (i, ch) in text.char_indices() {
+            if ch == '\n' {
+                line_starts.push(i + 1);
+            }
+        }
+        LineIndex { line_starts }
+    }
+
+    /// Convert a byte offset to an LSP Position (0-indexed line and character)
+    pub fn offset_to_position(&self, offset: usize) -> Position {
+        // Binary search for the line containing this offset
+        let line = self
+            .line_starts
+            .partition_point(|&start| start <= offset)
+            .saturating_sub(1);
+        let col = offset.saturating_sub(self.line_starts[line]);
+        Position::new(line as u32, col as u32)
+    }
+}
+
 /// A source file provided by the user.
 #[derive(Clone)]
 pub struct Input {
-    contents: String,
-    path: PathBuf,
+    pub contents: String,
+    pub path: PathBuf,
 }
 
 impl Input {

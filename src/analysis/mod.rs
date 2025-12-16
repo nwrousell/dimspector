@@ -4,13 +4,12 @@ mod models;
 mod print;
 mod types;
 
-use num_integer::Integer;
-
 use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
+use std::sync::Arc;
 
 use itertools::{Either, Itertools};
 use miette::SourceSpan;
+use tower_lsp::lsp_types::InlayHint;
 pub use types::{Shape, Variable};
 
 pub use crate::analysis::dimvars::{DimKind, DimVar};
@@ -41,38 +40,86 @@ impl JoinSemiLattice for AnalysisDomain {
     }
 }
 
+#[derive(Debug)]
 pub struct GlobalAnalysis {
     pub functions: HashMap<Path, FunctionAnalysis>,
-    pub models: Rc<ModelContext>,
+    pub models: Arc<ModelContext>,
+}
+
+fn vars_to_inlay(vars: &HashSet<Variable>) -> Option<String> {
+    if vars.len() == 0 {
+        None
+    } else if vars.len() == 1 {
+        let var = vars.iter().next().unwrap();
+        Some(format!(": {}", var))
+    } else {
+        let mut var_strings: Vec<String> = vars.iter().map(|v| format!("{}", v)).collect();
+        var_strings.sort();
+        Some(": {".to_owned() + &var_strings.join(", ") + "}")
+    }
 }
 
 impl GlobalAnalysis {
     pub fn new(funcs: &Vec<Function>) -> Self {
         Self {
             functions: HashMap::new(),
-            models: Rc::new(ModelContext::new(funcs)),
+            models: Arc::new(ModelContext::new(funcs)),
         }
     }
 
     pub fn analyze_func(&mut self, func: &Function) -> Result<()> {
         let name = func.identifier.clone();
-        let mut func_analysis = FunctionAnalysis::new(func, Rc::clone(&self.models));
+        let mut func_analysis = FunctionAnalysis::new(func, Arc::clone(&self.models));
         func_analysis.analyze_func(func)?;
         self.functions.insert(name, func_analysis);
         Ok(())
     }
+
+    pub fn inlay_hints(&self) -> Vec<InlayHint> {
+        let mut hints = Vec::new();
+
+        for (_, func_analysis) in &self.functions {
+            let func = &func_analysis.function;
+            // for each location
+            for loc in &func.locations {
+                if let Either::Left(stmt) = func.instr(&loc) {
+                    if let Some(target) = &stmt.target
+                        && let Some(position) = stmt.assign_end
+                    {
+                        let vars = func_analysis.state.get(loc).unwrap().get(target).unwrap();
+                        if let Some(label) = vars_to_inlay(vars) {
+                            hints.push(InlayHint {
+                                position,
+                                label: tower_lsp::lsp_types::InlayHintLabel::String(label),
+                                kind: None,
+                                text_edits: None,
+                                tooltip: None,
+                                padding_left: None,
+                                padding_right: None,
+                                data: None,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        hints
+    }
 }
 
+#[derive(Debug)]
 pub struct FunctionAnalysis {
     // TODO: currently just using Hash{Set,Map}s, but would benefit perhaps
     // from using bitsets, if the speedup is worth it
     pub id: Path,
     pub state: HashMap<Location, AnalysisDomain>,
-    pub models: Rc<ModelContext>,
+    pub models: Arc<ModelContext>,
+    pub function: Function,
 }
 
 impl FunctionAnalysis {
-    fn new(func: &Function, models: Rc<ModelContext>) -> Self {
+    fn new(func: &Function, models: Arc<ModelContext>) -> Self {
         // populate state with initial params
         let mut state = HashMap::new();
 
@@ -89,6 +136,7 @@ impl FunctionAnalysis {
             id: func.identifier.clone(),
             state,
             models,
+            function: func.clone(),
         }
     }
 
@@ -98,9 +146,9 @@ impl FunctionAnalysis {
             Binop::Sub => Variable::DimVar(left_dimvar - right_dimvar),
             Binop::Mult => Variable::DimVar(left_dimvar * right_dimvar),
             Binop::FloorDiv => match (left_dimvar.kind(), right_dimvar.kind()) {
-                (DimKind::Concrete(c1), DimKind::Concrete(c2)) => {
-                    Variable::DimVar(DimVar::new(DimKind::Concrete(c1.div_floor(&c2))))
-                }
+                (DimKind::Concrete(c1), DimKind::Concrete(c2)) => Variable::DimVar(DimVar::new(
+                    DimKind::Concrete(num_integer::Integer::div_floor(&c1, &c2)),
+                )),
                 _ => Variable::Top,
             },
             _ => Variable::Top,

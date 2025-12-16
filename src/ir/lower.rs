@@ -18,6 +18,7 @@ use rustpython_parser::{
 
 use crate::{
     analysis::{DimKind, DimVar},
+    ast::LineIndex,
     ir::types::{Binop, Constant, ExprKind, Function, Slice},
 };
 use crate::{
@@ -25,8 +26,8 @@ use crate::{
     ir::types::{BasicBlock, BasicBlockIdx, Cfg, Expr, PartialCfg, Path, Statement, Terminator},
 };
 
-pub fn lower_func(func: ASTFunction) -> Result<Function> {
-    let mut lowerer = LowerBody::new(func.clone());
+pub fn lower_func(func: ASTFunction, line_index: &LineIndex) -> Result<Function> {
+    let mut lowerer = LowerBody::new(func.clone(), line_index);
 
     lowerer.lower_func_body(func.body)?;
 
@@ -71,7 +72,7 @@ pub fn lower_func(func: ASTFunction) -> Result<Function> {
     ))
 }
 
-struct LowerBody {
+struct LowerBody<'a> {
     pub params: Vec<(Path, Option<Variable>)>,
     pub returns: Option<Vec<Variable>>,
     pub graph: PartialCfg, // might need to turn this into DiGraph<Option<BasicBlock>, ()>
@@ -81,10 +82,13 @@ struct LowerBody {
 
     /// used to distinguish between method calls + function calls
     pub known_paths: HashSet<String>,
+
+    /// for converting byte offsets to line/column positions
+    pub line_index: &'a LineIndex,
 }
 
-impl LowerBody {
-    fn new(func: ASTFunction) -> Self {
+impl<'a> LowerBody<'a> {
+    fn new(func: ASTFunction, line_index: &'a LineIndex) -> Self {
         let mut graph = PartialCfg::new();
         let start_block = BasicBlockIdx::from(graph.add_node(None));
         let mut params = Vec::new();
@@ -146,6 +150,7 @@ impl LowerBody {
             cur_loc: Some(start_block),
             start_block,
             known_paths,
+            line_index,
         }
     }
 
@@ -201,11 +206,19 @@ impl LowerBody {
         }
     }
 
-    fn add_statement(&mut self, value: Expr, target: Option<Path>, range: TextRange) {
+    fn add_statement(
+        &mut self,
+        value: Expr,
+        target: Option<Path>,
+        range: TextRange,
+        assign_end: Option<usize>,
+    ) {
+        let assign_end = assign_end.map(|offset| self.line_index.offset_to_position(offset));
         let stmt = Statement {
             target,
             value,
             range,
+            assign_end,
         };
         self.cur_block.push(stmt);
     }
@@ -238,9 +251,16 @@ impl LowerBody {
                 };
 
                 for (target, value) in target_value_pairs {
+                    let target_expr = self.lower_expr_to_expr(target.clone())?;
+
                     let target = self.lower_expr_to_path(target)?;
                     let value = self.lower_expr_to_expr(value)?;
-                    self.add_statement(value, Some(target), range);
+                    self.add_statement(
+                        value,
+                        Some(target),
+                        range,
+                        Some(target_expr.span.offset() + target_expr.span.len()),
+                    );
                 }
             }
             ASTStmt::AugAssign(StmtAugAssign {
@@ -249,20 +269,26 @@ impl LowerBody {
                 target,
                 value,
             }) => {
-                let target = self.lower_expr_to_path(*target)?;
+                let target_path = self.lower_expr_to_path(*target.clone())?;
+                let target_expr = self.lower_expr_to_expr(*target)?;
                 let value = self.lower_expr_to_expr(*value)?;
                 let expr = Expr::binop(
-                    Expr::path(target.clone(), range),
+                    Expr::path(target_path.clone(), range),
                     value.clone(),
                     op.into(),
                     range,
                 );
-                self.add_statement(expr, Some(target), range);
+                self.add_statement(
+                    expr,
+                    Some(target_path),
+                    range,
+                    Some(target_expr.span.offset() + target_expr.span.len()),
+                );
             }
 
             ASTStmt::Expr(StmtExpr { value, range }) => {
                 let value = self.lower_expr_to_expr(*value)?;
-                self.add_statement(value, None, range);
+                self.add_statement(value, None, range, None);
             }
 
             ASTStmt::While(StmtWhile {
@@ -386,7 +412,7 @@ impl LowerBody {
                 let exprs = items.into_iter().map(|i| i.context_expr);
                 for expr in exprs {
                     let expr = self.lower_expr_to_expr(expr)?;
-                    self.add_statement(expr, None, range);
+                    self.add_statement(expr, None, range, None);
                 }
                 self.lower_body(body)?
             }

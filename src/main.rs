@@ -1,15 +1,26 @@
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use dimspector::{
     analysis::{ShapeError, analyze, print_ir_with_inferred_shapes},
-    ast, ir,
+    ast, ir, lsp,
 };
 use miette::{MietteHandlerOpts, Report, Result};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 struct Args {
-    /// Path of the file to check
-    file: PathBuf,
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Analyze a file and report shape errors
+    Check {
+        /// Path of the file to check
+        file: PathBuf,
+    },
+    /// Start the language server (communicates over stdio)
+    Server,
 }
 
 fn main() -> Result<()> {
@@ -22,18 +33,28 @@ fn main() -> Result<()> {
 
     let args = Args::parse();
 
-    if let Err(err) = run(args.file) {
-        eprintln!("{:?}", err);
-        std::process::exit(1);
+    match args.command {
+        Command::Check { file } => {
+            if let Err(err) = check(file) {
+                eprintln!("{:?}", err);
+                std::process::exit(1);
+            }
+        }
+        Command::Server => {
+            lsp::start_server();
+        }
     }
+
     Ok(())
 }
 
-fn run(file: PathBuf) -> Result<()> {
+fn check(file: PathBuf) -> Result<()> {
     let input = match ast::read(&file) {
         Err(e) => return Err(Report::msg(e)),
         Ok(input) => input,
     };
+
+    let line_index = ast::LineIndex::new(&input.contents);
 
     let program = match ast::parse(&input) {
         Err(e) => return Err(Report::msg(e)),
@@ -41,7 +62,7 @@ fn run(file: PathBuf) -> Result<()> {
     };
     // log::debug!("AST:\n{}", program);
 
-    let ir = match ir::lower(program) {
+    let ir = match ir::lower(program, &line_index) {
         Err(e) => return Err(Report::msg(e)),
         Ok(ir) => ir,
     };

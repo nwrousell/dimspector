@@ -35,6 +35,7 @@ fn constraint_equal(dim1: &DimVar, dim2: &DimVar, span: SourceSpan) -> Result<()
     }
 }
 
+#[derive(Debug)]
 pub struct ModelContext {
     pub torch: TorchModels,
     pub user: UserModels,
@@ -49,6 +50,7 @@ impl ModelContext {
     }
 }
 
+#[derive(Debug)]
 pub struct UserModels {
     pub funcs: HashMap<String, Box<dyn Model>>,
 }
@@ -69,6 +71,7 @@ impl UserModels {
     }
 }
 
+#[derive(Debug)]
 pub struct TorchModels {
     pub matmul: MatmulModel,
     pub passthrough: PassthroughModel,
@@ -97,7 +100,7 @@ impl Default for TorchModels {
     }
 }
 
-pub trait Model {
+pub trait Model: std::fmt::Debug + Send + Sync {
     fn infer(
         &self,
         args: Vec<&Variable>,
@@ -236,6 +239,7 @@ pub fn resolve_args(
     mapping
 }
 
+#[derive(Debug)]
 pub enum Signature {
     Variadic {
         kwargs_defaults: Vec<(String, Variable)>,
@@ -243,6 +247,7 @@ pub enum Signature {
     FixedArity(Vec<(String, Option<Variable>)>),
 }
 
+#[derive(Debug)]
 pub struct TensorFromSizeModel;
 
 static VARIADIC_SIZE_SIGNATURE: LazyLock<Signature> = LazyLock::new(|| Signature::Variadic {
@@ -278,6 +283,7 @@ impl Model for TensorFromSizeModel {
     }
 }
 
+#[derive(Debug)]
 pub struct RandIntModel;
 
 static RANDINT_SIGNATURE: LazyLock<Signature> = LazyLock::new(|| {
@@ -304,6 +310,7 @@ impl Model for RandIntModel {
     }
 }
 
+#[derive(Debug)]
 pub struct BroadcastModel;
 
 impl Model for BroadcastModel {
@@ -342,6 +349,7 @@ impl Model for BroadcastModel {
     }
 }
 
+#[derive(Debug)]
 pub struct MatmulModel;
 
 static INPUT_OTHER_SIGNATURE: LazyLock<Signature> = LazyLock::new(|| {
@@ -463,6 +471,7 @@ impl Model for MatmulModel {
     }
 }
 
+#[derive(Debug)]
 pub struct PassthroughModel;
 static SINGLE_TENSOR_INPUT_SIGNATURE: LazyLock<Signature> =
     LazyLock::new(|| Signature::FixedArity(vec![("input".to_string(), None)]));
@@ -485,6 +494,7 @@ impl Model for PassthroughModel {
     }
 }
 
+#[derive(Debug)]
 pub struct RdxModel;
 static RDX_SIGNATURE: LazyLock<Signature> = LazyLock::new(|| {
     Signature::FixedArity(vec![
@@ -546,6 +556,7 @@ impl Model for RdxModel {
     }
 }
 
+#[derive(Debug)]
 pub struct ConcatModel;
 
 static CONCAT_SIGNATURE: LazyLock<Signature> = LazyLock::new(|| {
@@ -622,6 +633,7 @@ impl Model for ConcatModel {
     }
 }
 
+#[derive(Debug)]
 pub struct ReshapeModel;
 
 static RESHAPE_SIGNATURE: LazyLock<Signature> = LazyLock::new(|| {
@@ -694,6 +706,7 @@ impl Model for ReshapeModel {
     }
 }
 
+#[derive(Debug)]
 pub struct TransposeModel;
 
 static TRANSPOSE_SIGNATURE: LazyLock<Signature> = LazyLock::new(|| {
@@ -738,6 +751,7 @@ impl Model for TransposeModel {
     }
 }
 
+#[derive(Debug)]
 struct SignatureModel {
     params: Vec<Parameter>,
     // TODO: in the future with the possibility of mutations,

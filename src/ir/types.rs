@@ -15,6 +15,7 @@ use rustpython_parser::{
 };
 
 use num_traits::ToPrimitive;
+use tower_lsp::lsp_types::Position;
 
 use crate::analysis::Variable;
 
@@ -240,6 +241,7 @@ pub struct Statement {
     pub value: Expr,
     pub target: Option<Path>,
     pub range: TextRange,
+    pub assign_end: Option<Position>,
 }
 
 #[derive(Clone, Debug)]

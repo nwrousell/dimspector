@@ -10,13 +10,13 @@ pub use types::{
     Statement, Terminator,
 };
 
-use crate::ast;
+use crate::ast::{self, LineIndex};
 
-pub fn lower(program: ast::Program) -> Result<Program> {
+pub fn lower(program: ast::Program, line_index: &LineIndex) -> Result<Program> {
     let functions = program
         .functions
         .iter()
-        .map(|func| lower_func(func.clone()))
+        .map(|func| lower_func(func.clone(), line_index))
         .collect::<Result<Vec<Function>, anyhow::Error>>()?;
 
     Ok(Program { functions })
