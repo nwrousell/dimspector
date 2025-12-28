@@ -1,0 +1,37 @@
+{
+	"name": "dimspector-language-client",
+	"description": "VSCode extension for Dimspector",
+	"license": "MIT",
+	"version": "0.0.1",
+	"publisher": "dimspector",
+	"engines": {
+		"vscode": "^1.85.0"
+	},
+	"activationEvents": [
+		"onLanguage:python"
+	],
+	"main": "./out/extension.js",
+	"contributes": {
+		"configuration": {
+			"title": "Dimspector",
+			"properties": {
+				"dimspector.serverPath": {
+					"type": "string",
+					"description": "Path to the dimspector binary"
+				}
+			}
+		}
+	},
+	"dependencies": {
+		"vscode-languageclient": "9.0.1"
+	},
+	"devDependencies": {
+		"@types/node": "^20.0.0",
+		"typescript": "^5.3.0",
+		"@types/vscode": "1.85.0"
+	},
+	"scripts": {
+		"compile": "tsc -p ./",
+		"watch": "tsc -watch -p ./"
+	}
+}

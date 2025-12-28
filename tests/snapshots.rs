@@ -49,16 +49,18 @@ where
 
 fn lower_to_ir_string(path: &Path) -> Result<String> {
     let input = ast::read(path)?;
+    let line_index = ast::LineIndex::new(&input.contents);
     let program = ast::parse(&input)?;
-    let ir = ir::lower(program)?;
+    let ir = ir::lower(program, &line_index)?;
     Ok(format!("{}", ir))
 }
 
 fn analyze(path: &Path) -> Result<String> {
     let run = || -> Result<String> {
         let input = ast::read(path)?;
+        let line_index = ast::LineIndex::new(&input.contents);
         let program = ast::parse(&input)?;
-        let ir = ir::lower(program)?;
+        let ir = ir::lower(program, &line_index)?;
 
         match analysis::analyze(ir.clone()) {
             Ok(res) => {
