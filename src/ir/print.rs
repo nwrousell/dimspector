@@ -37,7 +37,7 @@ impl fmt::Display for Function {
             let block = self.data(idx);
             write!(f, "  {}:\n", block_idx)?;
             let block_content = format!("{}", block);
-            write!(f, "{}", indent(indent(&block_content)))?;
+            write!(f, "{}", indent(&indent(&block_content)))?;
         }
 
         Ok(())

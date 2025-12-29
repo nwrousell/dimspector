@@ -14,7 +14,6 @@ miette = { version = "7.6.0", features = ["fancy"] }
 num-integer = "0.1.46"
 num-traits = "0.2.19"
 petgraph = "0.8.3"
-rustpython-parser = "0.4.0"
 smallvec = "1.15.1"
 textwrap = "0.16.2"
 thiserror = "2.0.17"
@@ -24,6 +23,17 @@ tokio = { version = "1.48.0", features = [
     "io-std",
 ] }
 tower-lsp = "0.20.0"
+ruff_python_parser = { git = "https://github.com/astral-sh/ruff.git", rev = "4c4e652b38f3e9711eb5532aabf2571309d73900", package = "ruff_python_parser" }
+ruff_python_ast = { git = "https://github.com/astral-sh/ruff.git", rev = "4c4e652b38f3e9711eb5532aabf2571309d73900", package = "ruff_python_ast" }
+ruff_text_size = { git = "https://github.com/astral-sh/ruff.git", rev = "4c4e652b38f3e9711eb5532aabf2571309d73900", package = "ruff_text_size" }
+ty_python_semantic = { git = "https://github.com/astral-sh/ruff.git", rev = "4c4e652b38f3e9711eb5532aabf2571309d73900", package = "ty_python_semantic" }
+ruff_db = { git = "https://github.com/astral-sh/ruff.git", rev = "4c4e652b38f3e9711eb5532aabf2571309d73900", package = "ruff_db", features = [
+    "os",
+] }
+ty_module_resolver = { git = "https://github.com/astral-sh/ruff.git", rev = "4c4e652b38f3e9711eb5532aabf2571309d73900", package = "ty_module_resolver" }
+ty_project = { git = "https://github.com/astral-sh/ruff.git", rev = "4c4e652b38f3e9711eb5532aabf2571309d73900", package = "ty_project", features = [
+    "testing",
+] }
 
 [dev-dependencies]
 walkdir = "2.5"

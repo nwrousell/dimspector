@@ -175,7 +175,7 @@ pub fn ir_with_inferred_shapes_to_string(
             if let Some(stop) = stop_at {
                 if loc == stop {
                     write!(output, "  {}:\n", block_idx).unwrap();
-                    output.push_str(&indent(indent(&block_content)));
+                    output.push_str(&indent(&indent(&block_content)));
                     break 'outer;
                 }
             }
@@ -202,7 +202,7 @@ pub fn ir_with_inferred_shapes_to_string(
         if let Some(stop) = stop_at {
             if term_loc == stop {
                 write!(output, "  {}:\n", block_idx).unwrap();
-                output.push_str(&indent(indent(&block_content)));
+                output.push_str(&indent(&indent(&block_content)));
                 break 'outer;
             }
         }
@@ -210,7 +210,7 @@ pub fn ir_with_inferred_shapes_to_string(
         writeln!(block_content, "{}", block.terminator).unwrap();
 
         write!(output, "  {}:\n", block_idx).unwrap();
-        output.push_str(&indent(indent(&block_content)));
+        output.push_str(&indent(&indent(&block_content)));
     }
 
     output

@@ -7,7 +7,7 @@ use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
 use crate::analysis::{self};
-use crate::{ast, ir};
+use crate::ir;
 
 #[derive(Debug)]
 struct FileState {
@@ -42,38 +42,9 @@ impl LanguageServer for Backend {
         Ok(())
     }
 
-    async fn inlay_hint(&self, params: InlayHintParams) -> LSPResult<Option<Vec<InlayHint>>> {
-        // Get content of file, return None if not tracked yet
-        let contents = {
-            let files = self.files.read().unwrap();
-            match files.get(&params.text_document.uri) {
-                Some(state) => state.content.clone(),
-                None => return Ok(None),
-            }
-        };
-
-        let input = ast::Input {
-            contents,
-            path: params.text_document.uri.path().into(),
-        };
-
-        // Run CPU-bound analysis on blocking thread pool
-        let result = tokio::task::spawn_blocking(move || single_file_to_inlay_hints(input))
-            .await
-            .map_err(|e| LSPError {
-                code: tower_lsp::jsonrpc::ErrorCode::InternalError,
-                message: format!("task panicked: {e}").into(),
-                data: None,
-            })?;
-
-        match result {
-            Ok(hints) => Ok(Some(hints)),
-            Err(err) => Err(LSPError {
-                code: tower_lsp::jsonrpc::ErrorCode::InternalError,
-                message: err.to_string().into(),
-                data: None,
-            }),
-        }
+    async fn inlay_hint(&self, _params: InlayHintParams) -> LSPResult<Option<Vec<InlayHint>>> {
+        // TODO: reimplement with ruff AST
+        Ok(None)
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
@@ -147,10 +118,5 @@ pub async fn start_server() {
     Server::new(stdin, stdout, socket).serve(service).await;
 }
 
-fn single_file_to_inlay_hints(input: ast::Input) -> Result<Vec<InlayHint>> {
-    let line_index = ast::LineIndex::new(&input.contents);
-    let prog = ast::parse(&input)?;
-    let ir = ir::lower(prog, &line_index)?;
-    let analysis = analysis::analyze(ir)?;
-    Ok(analysis.inlay_hints())
-}
+// TODO: reimplement with ruff AST
+// fn single_file_to_inlay_hints(...) -> Result<Vec<InlayHint>> { ... }

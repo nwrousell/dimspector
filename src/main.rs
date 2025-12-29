@@ -1,9 +1,10 @@
 use clap::{Parser, Subcommand};
 use dimspector::{
     analysis::{ShapeError, analyze, print_ir_with_inferred_shapes},
-    ast, ir, lsp,
+    ir, lsp,
+    parse::parse_file,
 };
-use miette::{MietteHandlerOpts, Report, Result};
+use miette::{MietteHandlerOpts, NamedSource, Result};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
@@ -48,36 +49,31 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn check(file: PathBuf) -> Result<()> {
-    let input = match ast::read(&file) {
-        Err(e) => return Err(Report::msg(e)),
-        Ok(input) => input,
-    };
+fn check(file: PathBuf) -> anyhow::Result<()> {
+    if !file.exists() {
+        anyhow::bail!("file not found: {}", file.display());
+    }
 
-    let line_index = ast::LineIndex::new(&input.contents);
+    let abs_file = std::fs::canonicalize(&file)?;
+    let parsed = parse_file(&abs_file)?;
 
-    let program = match ast::parse(&input) {
-        Err(e) => return Err(Report::msg(e)),
-        Ok(program) => program,
-    };
-    // log::debug!("AST:\n{}", program);
-
-    let ir = match ir::lower(program, &line_index) {
-        Err(e) => return Err(Report::msg(e)),
-        Ok(ir) => ir,
-    };
+    let ir = ir::lower(&parsed)?;
     log::debug!("IR:\n{}", ir);
+
+    let file_contents = std::fs::read_to_string(&abs_file)?;
+    let named_source = NamedSource::new(file.display().to_string(), file_contents);
 
     let res = analyze(ir.clone());
     let res = match res {
         Ok(res) => res,
         Err(err) => {
-            let named_source = input.into_named_source();
             if let Some(shape_error) = err.downcast_ref::<ShapeError>() {
+                use miette::Report;
                 let report = Report::new(shape_error.clone()).with_source_code(named_source);
-                return Err(report.into());
+                eprintln!("{}", report);
+                anyhow::bail!("shape analysis failed");
             } else {
-                return Err(Report::msg(err));
+                return Err(err);
             }
         }
     };

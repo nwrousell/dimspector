@@ -6,19 +6,19 @@ use petgraph::{
     graph::NodeIndex,
     visit::{Dfs, EdgeRef, Walker},
 };
-use rustpython_parser::{
-    ast::{
-        Expr as ASTExpr, ExprAttribute, ExprBinOp, ExprCall, ExprCompare, ExprConstant,
-        ExprJoinedStr, ExprList, ExprName, ExprSlice, ExprSubscript, ExprTuple, ExprUnaryOp,
-        Keyword, Stmt as ASTStmt, StmtAssign, StmtAugAssign, StmtExpr, StmtFor,
-        StmtFunctionDef as ASTFunction, StmtIf, StmtReturn, StmtWhile, StmtWith, UnaryOp,
-    },
-    text_size::TextRange,
+
+use ruff_python_ast::{
+    Expr as ASTExpr, ExprAttribute, ExprBinOp, ExprCall, ExprCompare, ExprFString, ExprList,
+    ExprName, ExprNumberLiteral, ExprSlice, ExprStringLiteral, ExprSubscript, ExprTuple,
+    ExprUnaryOp, Keyword, Number, Stmt as ASTStmt, StmtAssign, StmtAugAssign, StmtExpr, StmtFor,
+    StmtFunctionDef, StmtIf, StmtReturn, StmtWhile, StmtWith, UnaryOp,
 };
+use ruff_text_size::TextRange;
+use ty_project::ProjectDatabase;
+use ty_python_semantic::SemanticModel;
 
 use crate::{
     analysis::{DimKind, DimVar},
-    ast::LineIndex,
     ir::types::{Binop, Constant, ExprKind, Function, Slice},
 };
 use crate::{
@@ -26,10 +26,14 @@ use crate::{
     ir::types::{BasicBlock, BasicBlockIdx, Cfg, Expr, PartialCfg, Path, Statement, Terminator},
 };
 
-pub fn lower_func(func: ASTFunction, line_index: &LineIndex) -> Result<Function> {
-    let mut lowerer = LowerBody::new(func.clone(), line_index);
+pub fn lower_func<'db>(
+    func: &StmtFunctionDef,
+    db: &'db ProjectDatabase,
+    model: &'db SemanticModel<'db>,
+) -> Result<Function> {
+    let mut lowerer = LowerBody::new(func, db, model);
 
-    lowerer.lower_func_body(func.body)?;
+    lowerer.lower_func_body(&func.body)?;
 
     // Find all basic blocks reachable from the start.
     let reachable = Dfs::new(&lowerer.graph, lowerer.start_block.into())
@@ -72,7 +76,7 @@ pub fn lower_func(func: ASTFunction, line_index: &LineIndex) -> Result<Function>
     ))
 }
 
-struct LowerBody<'a> {
+struct LowerBody<'db> {
     pub params: Vec<(Path, Option<Variable>)>,
     pub returns: Option<Vec<Variable>>,
     pub graph: PartialCfg, // might need to turn this into DiGraph<Option<BasicBlock>, ()>
@@ -83,12 +87,17 @@ struct LowerBody<'a> {
     /// used to distinguish between method calls + function calls
     pub known_paths: HashSet<String>,
 
-    /// for converting byte offsets to line/column positions
-    pub line_index: &'a LineIndex,
+    pub db: &'db ProjectDatabase,
+    /// semantic model for type inference
+    pub model: &'db SemanticModel<'db>,
 }
 
-impl<'a> LowerBody<'a> {
-    fn new(func: ASTFunction, line_index: &'a LineIndex) -> Self {
+impl<'db> LowerBody<'db> {
+    fn new(
+        func: &StmtFunctionDef,
+        db: &'db ProjectDatabase,
+        model: &'db SemanticModel<'db>,
+    ) -> Self {
         let mut graph = PartialCfg::new();
         let start_block = BasicBlockIdx::from(graph.add_node(None));
         let mut params = Vec::new();
@@ -96,8 +105,8 @@ impl<'a> LowerBody<'a> {
         let mut known_paths = HashSet::new();
 
         // populate params
-        for (i, arg) in func.args.args.clone().iter().enumerate() {
-            let identifier = &arg.def.arg;
+        for (i, param) in func.parameters.args.iter().enumerate() {
+            let identifier = &param.parameter.name;
 
             // TODO: have new Variable type so that not every non-tensor-annotated param is a DimVar
             let mut ty = Variable::DimVar(DimVar::new(crate::analysis::DimKind::Named(format!(
@@ -105,18 +114,19 @@ impl<'a> LowerBody<'a> {
                 i
             ))));
 
-            if let Some(annotation) = arg.def.annotation.clone() {
-                if let ASTExpr::Subscript(subscript) = *annotation {
-                    if let ASTExpr::Name(name) = *subscript.value {
+            if let Some(annotation) = &param.parameter.annotation {
+                if let ASTExpr::Subscript(subscript) = annotation.as_ref() {
+                    if let ASTExpr::Name(name) = subscript.value.as_ref() {
                         if name.id.as_str() == "T" {
-                            if let ASTExpr::Constant(shape_str) = *subscript.slice {
-                                let shape_str = shape_str.value.expect_str();
-                                ty = Variable::Tensor(Shape::from_str(&shape_str));
+                            if let ASTExpr::StringLiteral(shape_str) = subscript.slice.as_ref() {
+                                let shape_str = shape_str.value.to_str();
+                                ty = Variable::Tensor(Shape::from_str(shape_str));
                             }
                         } else if name.id.as_str() == "int" {
-                            if let ASTExpr::Constant(dvar_str) = *subscript.slice {
-                                let dvar = dvar_str.value.expect_str();
-                                ty = Variable::DimVar(DimVar::new(DimKind::Named(dvar)));
+                            if let ASTExpr::StringLiteral(dvar_str) = subscript.slice.as_ref() {
+                                let dvar = dvar_str.value.to_str();
+                                ty =
+                                    Variable::DimVar(DimVar::new(DimKind::Named(dvar.to_string())));
                             }
                         }
                     }
@@ -129,13 +139,13 @@ impl<'a> LowerBody<'a> {
 
         // TODO: handle tuple returns + factor out the logic identical from above
         let mut returns = None;
-        if let Some(ret_ty) = func.returns {
-            if let ASTExpr::Subscript(subscript) = *ret_ty {
-                if let ASTExpr::Name(name) = *subscript.value {
+        if let Some(ret_ty) = &func.returns {
+            if let ASTExpr::Subscript(subscript) = ret_ty.as_ref() {
+                if let ASTExpr::Name(name) = subscript.value.as_ref() {
                     if name.id.as_str() == "T" {
-                        if let ASTExpr::Constant(shape_str) = *subscript.slice {
-                            let shape_str = shape_str.value.expect_str();
-                            returns = Some(vec![Variable::Tensor(Shape::from_str(&shape_str))]);
+                        if let ASTExpr::StringLiteral(shape_str) = subscript.slice.as_ref() {
+                            let shape_str = shape_str.value.to_str();
+                            returns = Some(vec![Variable::Tensor(Shape::from_str(shape_str))]);
                         }
                     }
                 }
@@ -150,11 +160,12 @@ impl<'a> LowerBody<'a> {
             cur_loc: Some(start_block),
             start_block,
             known_paths,
-            line_index,
+            db,
+            model,
         }
     }
 
-    fn lower_func_body(&mut self, body: Vec<ASTStmt>) -> Result<()> {
+    fn lower_func_body(&mut self, body: &[ASTStmt]) -> Result<()> {
         self.lower_body(body)?;
 
         // functions implicitly return None
@@ -165,9 +176,9 @@ impl<'a> LowerBody<'a> {
         Ok(())
     }
 
-    fn lower_body(&mut self, body: Vec<ASTStmt>) -> Result<()> {
+    fn lower_body(&mut self, body: &[ASTStmt]) -> Result<()> {
         for stmt in body {
-            self.lower_statement(stmt)?;
+            self.lower_statement(stmt.clone())?;
         }
         Ok(())
     }
@@ -211,9 +222,8 @@ impl<'a> LowerBody<'a> {
         value: Expr,
         target: Option<Path>,
         range: TextRange,
-        assign_end: Option<usize>,
+        assign_end: Option<tower_lsp::lsp_types::Position>,
     ) {
-        let assign_end = assign_end.map(|offset| self.line_index.offset_to_position(offset));
         let stmt = Statement {
             target,
             value,
@@ -234,12 +244,12 @@ impl<'a> LowerBody<'a> {
                 // ! this doesn't work, as tuple assigns are represented as a tuple and not multiple targets
                 // split targets/value into pairs
                 let target_value_pairs = if targets.len() > 1 {
-                    if let Some(ExprTuple { elts, .. }) = value.as_tuple_expr() {
+                    if let ASTExpr::Tuple(ExprTuple { elts, .. }) = value.as_ref() {
                         assert!(elts.len() == targets.len());
                         targets
-                            .into_iter()
-                            .zip(elts.into_iter())
-                            .map(|(t, v)| (t, v.clone()))
+                            .iter()
+                            .zip(elts.iter())
+                            .map(|(t, v)| (t.clone(), v.clone()))
                             .collect()
                     } else {
                         return Err(anyhow::anyhow!(
@@ -251,16 +261,20 @@ impl<'a> LowerBody<'a> {
                 };
 
                 for (target, value) in target_value_pairs {
-                    let target_expr = self.lower_expr_to_expr(target.clone())?;
-
-                    let target = self.lower_expr_to_path(target)?;
+                    let target_range = match &target {
+                        ASTExpr::Name(ExprName { range, .. }) => *range,
+                        ASTExpr::Attribute(ExprAttribute { range, .. }) => *range,
+                        ASTExpr::Subscript(ExprSubscript { range, .. }) => *range,
+                        _ => range,
+                    };
+                    let target_path = self.lower_expr_to_path(target)?;
                     let value = self.lower_expr_to_expr(value)?;
-                    self.add_statement(
-                        value,
-                        Some(target),
-                        range,
-                        Some(target_expr.span.offset() + target_expr.span.len()),
-                    );
+                    let assign_end_byte = target_range.end().to_usize();
+                    let assign_end = Some(tower_lsp::lsp_types::Position::new(
+                        0,
+                        assign_end_byte as u32,
+                    ));
+                    self.add_statement(value, Some(target_path), range, assign_end);
                 }
             }
             ASTStmt::AugAssign(StmtAugAssign {
@@ -268,25 +282,32 @@ impl<'a> LowerBody<'a> {
                 range,
                 target,
                 value,
+                ..
             }) => {
-                let target_path = self.lower_expr_to_path(*target.clone())?;
-                let target_expr = self.lower_expr_to_expr(*target)?;
+                let target_range = match target.as_ref() {
+                    ASTExpr::Name(ExprName { range, .. }) => *range,
+                    ASTExpr::Attribute(ExprAttribute { range, .. }) => *range,
+                    ASTExpr::Subscript(ExprSubscript { range, .. }) => *range,
+                    _ => range,
+                };
+                let target_path = self.lower_expr_to_path(*target)?;
                 let value = self.lower_expr_to_expr(*value)?;
+                let range_converted = range;
                 let expr = Expr::binop(
-                    Expr::path(target_path.clone(), range),
+                    Expr::path(target_path.clone(), range_converted),
                     value.clone(),
                     op.into(),
-                    range,
+                    range_converted,
                 );
-                self.add_statement(
-                    expr,
-                    Some(target_path),
-                    range,
-                    Some(target_expr.span.offset() + target_expr.span.len()),
-                );
+                let assign_end_byte = target_range.end().to_usize();
+                let assign_end = Some(tower_lsp::lsp_types::Position::new(
+                    0,
+                    assign_end_byte as u32,
+                ));
+                self.add_statement(expr, Some(target_path), range_converted, assign_end);
             }
 
-            ASTStmt::Expr(StmtExpr { value, range }) => {
+            ASTStmt::Expr(StmtExpr { value, range, .. }) => {
                 let value = self.lower_expr_to_expr(*value)?;
                 self.add_statement(value, None, range, None);
             }
@@ -294,8 +315,8 @@ impl<'a> LowerBody<'a> {
             ASTStmt::While(StmtWhile {
                 body, orelse, test, ..
             }) => {
-                if orelse.len() > 1 {
-                    todo!("handle while else")
+                if !orelse.is_empty() {
+                    todo!("handle while loop else")
                 }
 
                 let cond_block = self.new_block();
@@ -316,7 +337,7 @@ impl<'a> LowerBody<'a> {
                 self.finish_block(Some(body_block), jmp);
 
                 // lower body, jump to cond block
-                self.lower_body(body)?;
+                self.lower_body(&body)?;
                 let jmp = Terminator::Jump(cond_block);
                 match self.cur_loc {
                     Some(_) => {
@@ -328,43 +349,85 @@ impl<'a> LowerBody<'a> {
                 };
             }
             ASTStmt::If(StmtIf {
-                body, orelse, test, ..
+                body,
+                test,
+                elif_else_clauses,
+                ..
             }) => {
-                // make then and else blocks
-                let then_block = self.new_block();
-                let else_block = self.new_block();
-                let join_block = self.new_block();
+                todo!(
+                    "re-implement lowering for if statements (ruff's AST has an arbitrary number of elif clauses)"
+                )
+                // let mut current_else_block = self.new_block();
+                // let join_block = self.new_block();
 
-                // cond jump from current to then/else
-                let cond = self.lower_expr_to_expr(*test)?;
-                let jmp = Terminator::CondJump {
-                    cond: Some(cond),
-                    true_dst: then_block,
-                    false_dst: else_block,
-                };
-                self.finish_block(Some(then_block), jmp);
+                // let then_block = self.new_block();
+                // let cond = self.lower_expr_to_expr(*test)?;
+                // let jmp = Terminator::CondJump {
+                //     cond: Some(cond),
+                //     true_dst: then_block,
+                //     false_dst: current_else_block,
+                // };
+                // self.finish_block(Some(then_block), jmp);
 
-                // lower then body
-                let jmp = Terminator::Jump(join_block);
-                self.lower_body(body)?;
-                match self.cur_loc {
-                    Some(_) => {
-                        self.finish_block(Some(else_block), jmp.clone());
-                    }
-                    None => self.cur_loc = Some(else_block),
-                };
+                // self.lower_body(&body)?;
+                // let jmp = Terminator::Jump(join_block);
+                // match self.cur_loc {
+                //     Some(_) => {
+                //         self.finish_block(Some(current_else_block), jmp.clone());
+                //     }
+                //     None => self.cur_loc = Some(current_else_block),
+                // };
 
-                // lower else body
-                self.lower_body(orelse)?;
-                match self.cur_loc {
-                    Some(_) => {
-                        self.finish_block(Some(join_block), jmp);
-                    }
-                    None => self.cur_loc = Some(join_block),
-                };
+                // for clause in elif_else_clauses.iter() {
+                //     if let Some(test) = &clause.test {
+                //         let elif_block = self.new_block();
+                //         let next_else_block = self.new_block();
+                //         let cond = self.lower_expr_to_expr(test.clone())?;
+                //         let jmp = Terminator::CondJump {
+                //             cond: Some(cond),
+                //             true_dst: elif_block,
+                //             false_dst: next_else_block,
+                //         };
+                //         self.finish_block(Some(elif_block), jmp);
+
+                //         self.lower_body(&clause.body)?;
+                //         let jmp_to_join = Terminator::Jump(join_block);
+                //         match self.cur_loc {
+                //             Some(_) => {
+                //                 self.finish_block(Some(next_else_block), jmp_to_join.clone());
+                //             }
+                //             None => self.cur_loc = Some(next_else_block),
+                //         };
+                //         current_else_block = next_else_block;
+                //     } else {
+                //         self.lower_body(&clause.body)?;
+                //         let jmp_to_join = Terminator::Jump(join_block);
+                //         match self.cur_loc {
+                //             Some(_) => {
+                //                 self.finish_block(Some(join_block), jmp_to_join);
+                //             }
+                //             None => self.cur_loc = Some(join_block),
+                //         };
+                //     }
+                // }
+
+                // if !elif_else_clauses.is_empty()
+                //     && elif_else_clauses
+                //         .last()
+                //         .map(|c| c.test.is_some())
+                //         .unwrap_or(false)
+                // {
+                //     let jmp_to_join = Terminator::Jump(join_block);
+                //     match self.cur_loc {
+                //         Some(_) => {
+                //             self.finish_block(Some(join_block), jmp_to_join);
+                //         }
+                //         None => self.cur_loc = Some(join_block),
+                //     };
+                // }
             }
             ASTStmt::For(StmtFor { body, orelse, .. }) => {
-                if orelse.len() > 1 {
+                if !orelse.is_empty() {
                     todo!("handle for else")
                 }
 
@@ -385,7 +448,7 @@ impl<'a> LowerBody<'a> {
                 self.finish_block(Some(body_block), jmp);
 
                 // lower body
-                self.lower_body(body)?;
+                self.lower_body(&body)?;
                 let jmp = Terminator::Jump(cond_block);
                 match self.cur_loc {
                     Some(_) => {
@@ -409,12 +472,12 @@ impl<'a> LowerBody<'a> {
             ASTStmt::With(StmtWith {
                 body, items, range, ..
             }) => {
-                let exprs = items.into_iter().map(|i| i.context_expr);
-                for expr in exprs {
-                    let expr = self.lower_expr_to_expr(expr)?;
+                let range_converted = range;
+                for item in items.iter() {
+                    let expr = self.lower_expr_to_expr(item.context_expr.clone())?;
                     self.add_statement(expr, None, range, None);
                 }
-                self.lower_body(body)?
+                self.lower_body(&body)?
             }
 
             _ => todo!("unhandled statement: {stmt:?}"),
@@ -425,11 +488,11 @@ impl<'a> LowerBody<'a> {
 
     fn lower_expr_to_slice(&mut self, expr_slice: ExprSlice) -> Result<Slice> {
         let lower = match &expr_slice.lower {
-            Some(expr_lower) => Some(self.lower_expr_to_expr(*expr_lower.clone())?),
+            Some(expr_lower) => Some(self.lower_expr_to_expr((**expr_lower).clone())?),
             None => None,
         };
         let upper = match &expr_slice.upper {
-            Some(expr_upper) => Some(self.lower_expr_to_expr(*expr_upper.clone())?),
+            Some(expr_upper) => Some(self.lower_expr_to_expr((**expr_upper).clone())?),
             None => None,
         };
 
@@ -469,29 +532,43 @@ impl<'a> LowerBody<'a> {
                 op,
                 right,
                 range,
+                ..
             }) => {
                 let left = self.lower_expr_to_expr(*left)?;
                 let right = self.lower_expr_to_expr(*right)?;
                 Ok(Expr::binop(left, right, Binop::from(op), range))
             }
 
-            ASTExpr::Constant(ExprConstant { range, value, .. }) => {
-                let constant = Constant::from(value);
+            ASTExpr::NumberLiteral(ExprNumberLiteral { range, value, .. }) => {
+                let constant = match value {
+                    Number::Int(i) => Constant::Int(i.as_i64().unwrap_or(0)),
+                    Number::Float(f) => Constant::Float(f),
+                    Number::Complex { .. } => Constant::None,
+                };
                 Ok(Expr::constant(range, constant))
             }
+            ASTExpr::StringLiteral(ExprStringLiteral { range, .. }) => {
+                Ok(Expr::constant(range, Constant::Str("".to_string())))
+            }
+            ASTExpr::BooleanLiteral(expr) => {
+                Ok(Expr::constant(expr.range, Constant::Bool(expr.value)))
+            }
+            ASTExpr::NoneLiteral(expr) => Ok(Expr::constant(expr.range, Constant::None)),
 
             ASTExpr::Call(ExprCall {
-                args,
+                arguments,
                 func,
-                keywords,
                 range,
+                ..
             }) => {
-                let pos_args = args
+                let pos_args = arguments
+                    .args
                     .iter()
                     .map(|arg| self.lower_expr_to_expr(arg.clone()))
                     .collect::<Result<Vec<_>, anyhow::Error>>()?;
 
-                let keyword_args = keywords
+                let keyword_args = arguments
+                    .keywords
                     .iter()
                     .map(|Keyword { arg, value, .. }| {
                         let e = self.lower_expr_to_expr(value.clone())?;
@@ -593,7 +670,7 @@ impl<'a> LowerBody<'a> {
                 Ok(Expr::index(range, expr, index))
             }
 
-            ASTExpr::JoinedStr(ExprJoinedStr { range, .. }) => {
+            ASTExpr::FString(ExprFString { range, .. }) => {
                 Ok(Expr::constant(range, Constant::None))
             }
 
@@ -603,7 +680,6 @@ impl<'a> LowerBody<'a> {
                     .map(|e| self.lower_expr_to_expr(e))
                     .collect::<Result<Vec<Expr>>>()?;
 
-                // TODO: might be good to rename Tuple to Seq
                 Ok(Expr::tuple(elts, range))
             }
 

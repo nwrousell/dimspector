@@ -14,35 +14,27 @@ def relative_attention_cross(
     rel_pos_bias: T["seq_k seq_q"],  # Bug: dimensions transposed
 ):
     """Cross-attention with relative position bias."""
-    batch = x_q.shape[0]
-    seq_q = x_q.shape[1]
-    seq_k = x_kv.shape[1]
-    d_model = x_q.shape[2]
-    heads = W_q.shape[1]
-    d_k = W_q.shape[2]
-    d_v = W_v.shape[2]
-
     # Project inputs to query, key, value
     query = torch.transpose(
         torch.reshape(
-            x_q @ torch.reshape(W_q, (d_model, -1)),
-            (batch, seq_q, heads, d_k),
+            x_q @ torch.reshape(W_q, (x_q.shape[2], -1)),
+            (x_q.shape[0], x_q.shape[1], W_q.shape[1], W_q.shape[2]),
         ),
         1,
         2,
     )
     key = torch.transpose(
         torch.reshape(
-            x_kv @ torch.reshape(W_k, (d_model, -1)),
-            (batch, seq_k, heads, d_k),
+            x_kv @ torch.reshape(W_k, (x_kv.shape[2], -1)),
+            (x_kv.shape[0], x_kv.shape[1], W_k.shape[1], W_k.shape[2]),
         ),
         1,
         2,
     )
     value = torch.transpose(
         torch.reshape(
-            x_kv @ torch.reshape(W_v, (d_model, -1)),
-            (batch, seq_k, heads, d_v),
+            x_kv @ torch.reshape(W_v, (x_kv.shape[2], -1)),
+            (x_kv.shape[0], x_kv.shape[1], W_v.shape[1], W_v.shape[2]),
         ),
         1,
         2,

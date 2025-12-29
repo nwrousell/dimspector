@@ -9,12 +9,9 @@ use petgraph::{
 };
 use smallvec::{SmallVec, smallvec};
 
-use rustpython_parser::{
-    ast::{CmpOp, Constant as ASTConstant, Operator},
-    text_size::TextRange,
-};
+use ruff_python_ast::{CmpOp, Operator};
+use ruff_text_size::TextRange;
 
-use num_traits::ToPrimitive;
 use tower_lsp::lsp_types::Position;
 
 use crate::analysis::Variable;
@@ -333,29 +330,6 @@ impl Constant {
             Constant::Int(n) => Some(Constant::Int(-n)),
             Constant::Float(n) => Some(Constant::Float(-n)),
             _ => None,
-        }
-    }
-}
-
-impl From<ASTConstant> for Constant {
-    fn from(value: ASTConstant) -> Self {
-        match value {
-            ASTConstant::None => Self::None,
-            ASTConstant::Bool(b) => Self::Bool(b),
-            ASTConstant::Str(s) => Self::Str(s),
-            ASTConstant::Bytes(_) => Self::None,
-            ASTConstant::Int(big_int) => Self::Int(
-                big_int
-                    .to_i64()
-                    .expect("Constant BigInt too big/small for i64"),
-            ),
-            ASTConstant::Tuple(_) => {
-                todo!()
-                // Self::Tuple(constants.into_iter().map(|c| Constant::from(c)).collect())
-            }
-            ASTConstant::Float(f) => Constant::Float(f),
-            ASTConstant::Complex { .. } => Self::None,
-            ASTConstant::Ellipsis => Self::None,
         }
     }
 }

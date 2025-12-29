@@ -3,7 +3,8 @@ use std::path::Path;
 use anyhow::Result;
 use dimspector::{
     analysis::{self, ir_with_inferred_shapes_to_string},
-    ast, ir,
+    ir,
+    parse::parse_file,
 };
 use walkdir::WalkDir;
 
@@ -48,19 +49,15 @@ where
 }
 
 fn lower_to_ir_string(path: &Path) -> Result<String> {
-    let input = ast::read(path)?;
-    let line_index = ast::LineIndex::new(&input.contents);
-    let program = ast::parse(&input)?;
-    let ir = ir::lower(program, &line_index)?;
+    let parsed = parse_file(path)?;
+    let ir = ir::lower(&parsed)?;
     Ok(format!("{}", ir))
 }
 
 fn analyze(path: &Path) -> Result<String> {
     let run = || -> Result<String> {
-        let input = ast::read(path)?;
-        let line_index = ast::LineIndex::new(&input.contents);
-        let program = ast::parse(&input)?;
-        let ir = ir::lower(program, &line_index)?;
+        let parsed = parse_file(path)?;
+        let ir = ir::lower(&parsed)?;
 
         match analysis::analyze(ir.clone()) {
             Ok(res) => {
