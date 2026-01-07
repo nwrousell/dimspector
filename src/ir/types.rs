@@ -54,7 +54,7 @@ impl Location {
 
 #[derive(Clone, Debug)]
 pub struct Function {
-    pub identifier: Path,
+    pub identifier: String,
     pub cfg: Cfg,
     pub params: Vec<Parameter>,
     pub returns: Option<Vec<Variable>>,
@@ -63,19 +63,19 @@ pub struct Function {
 }
 
 #[derive(Clone, Debug)]
-pub struct Parameter(pub Path, pub Option<Variable>);
+pub struct Parameter(pub String, pub Option<Variable>);
 
 impl Parameter {
-    pub fn new(param: Path, annotation: Option<Variable>) -> Self {
+    pub fn new(param: String, annotation: Option<Variable>) -> Self {
         Self(param, annotation)
     }
 }
 
 impl Function {
     pub fn new(
-        identifier: Path,
+        identifier: String,
         cfg: Cfg,
-        params: Vec<(Path, Option<Variable>)>,
+        params: Vec<(String, Option<Variable>)>,
         returns: Option<Vec<Variable>>,
     ) -> Function {
         let rpo: Vec<BasicBlockIdx> = utils::reverse_post_order(&cfg, 0.into())
@@ -216,27 +216,10 @@ impl From<BasicBlockIdx> for NodeIndex {
     }
 }
 
-#[derive(Clone, Hash, Eq, PartialEq, Debug)]
-pub struct Path(Vec<String>);
-
-impl Path {
-    pub fn new(path: &[String]) -> Self {
-        Self(path.into())
-    }
-
-    pub fn to_dot_string(&self) -> String {
-        self.0.join(".")
-    }
-
-    pub fn parts(&self) -> &[String] {
-        &self.0
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct Statement {
     pub value: Expr,
-    pub target: Option<Path>,
+    pub target: Option<Expr>,
     pub range: TextRange,
     pub assign_end: Option<Position>,
 }
@@ -247,6 +230,23 @@ pub struct Expr {
     pub ty: Type,
     pub span: SourceSpan,
 }
+
+// Manual implementations of Hash, Eq, PartialEq that exclude span
+// (span is only for error reporting, not semantic equality)
+impl std::hash::Hash for Expr {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.kind.hash(state);
+        self.ty.hash(state);
+    }
+}
+
+impl PartialEq for Expr {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind && self.ty == other.ty
+    }
+}
+
+impl Eq for Expr {}
 
 pub fn range_to_span(range: TextRange) -> SourceSpan {
     let start = SourceOffset::from(range.start().to_usize());
@@ -267,9 +267,27 @@ impl Expr {
         }
     }
 
+    pub fn ident(name: String, range: TextRange, ty: Type) -> Expr {
+        Expr {
+            kind: ExprKind::Ident(name),
+            ty,
+            span: range_to_span(range),
+        }
+    }
+
+    pub fn attribute(value: Expr, attr: String, range: TextRange, ty: Type) -> Expr {
+        Expr {
+            kind: ExprKind::Attribute {
+                value: Box::new(value),
+                attr,
+            },
+            ty,
+            span: range_to_span(range),
+        }
+    }
+
     pub fn call(
-        receiver: Option<Path>,
-        function: Path,
+        function: Expr,
         pos_args: Vec<Expr>,
         keyword_args: Vec<(String, Expr)>,
         range: TextRange,
@@ -277,8 +295,7 @@ impl Expr {
     ) -> Expr {
         Expr {
             kind: ExprKind::Call {
-                receiver,
-                function,
+                function: Box::new(function),
                 pos_args,
                 keyword_args,
             },
@@ -290,14 +307,6 @@ impl Expr {
     pub fn constant(range: TextRange, constant: Constant, ty: Type) -> Expr {
         Expr {
             kind: ExprKind::Constant(constant),
-            ty,
-            span: range_to_span(range),
-        }
-    }
-
-    pub fn path(path: Path, range: TextRange, ty: Type) -> Expr {
-        Expr {
-            kind: ExprKind::Path(path),
             ty,
             span: range_to_span(range),
         }
@@ -332,6 +341,46 @@ pub enum Constant {
     Float(f64),
 }
 
+// Manual implementations for Hash/Eq since f64 doesn't implement these
+impl std::hash::Hash for Constant {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        match self {
+            Constant::None => 0.hash(state),
+            Constant::Bool(b) => {
+                1.hash(state);
+                b.hash(state);
+            }
+            Constant::Str(s) => {
+                2.hash(state);
+                s.hash(state);
+            }
+            Constant::Int(i) => {
+                3.hash(state);
+                i.hash(state);
+            }
+            Constant::Float(f) => {
+                4.hash(state);
+                f.to_bits().hash(state); // Use bit representation for hashing
+            }
+        }
+    }
+}
+
+impl PartialEq for Constant {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Constant::None, Constant::None) => true,
+            (Constant::Bool(a), Constant::Bool(b)) => a == b,
+            (Constant::Str(a), Constant::Str(b)) => a == b,
+            (Constant::Int(a), Constant::Int(b)) => a == b,
+            (Constant::Float(a), Constant::Float(b)) => a.to_bits() == b.to_bits(),
+            _ => false,
+        }
+    }
+}
+
+impl Eq for Constant {}
+
 impl Constant {
     pub fn negate_if_num(&self) -> Option<Self> {
         match self {
@@ -342,7 +391,7 @@ impl Constant {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Hash, Eq, PartialEq)]
 pub enum Binop {
     Add,
     Sub,
@@ -412,7 +461,7 @@ impl From<Operator> for Binop {
 // For now, we use a unit type as a placeholder for type information.
 // This provides a layer of indirection that allows for future expansion
 // beyond just aliasing ty_python_semantic's Type.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub struct Type;
 
 impl Type {
@@ -424,21 +473,24 @@ impl Type {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub enum ExprKind {
+    Ident(String),
+    Attribute {
+        value: Box<Expr>,
+        attr: String,
+    },
     Binop {
         left: Box<Expr>,
         right: Box<Expr>,
         op: Binop,
     },
     Call {
-        receiver: Option<Path>,
-        function: Path,
+        function: Box<Expr>,
         pos_args: Vec<Expr>,
         keyword_args: Vec<(String, Expr)>,
     },
     Constant(Constant),
-    Path(Path),
     Tuple(Vec<Expr>),
     Index {
         receiver: Box<Expr>,
@@ -446,7 +498,7 @@ pub enum ExprKind {
     },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub struct Slice {
     pub lower: Option<Expr>,
     pub upper: Option<Expr>,

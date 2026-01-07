@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 
 use anyhow::Result;
 use itertools::{Either, Itertools};
@@ -69,7 +69,7 @@ pub fn lower_func<'db>(
     }
 
     Ok(Function::new(
-        Path::new(&[func.name.to_string()]),
+        func.name.to_string(),
         cfg,
         lowerer.params,
         lowerer.returns,
@@ -77,15 +77,12 @@ pub fn lower_func<'db>(
 }
 
 struct LowerBody<'db> {
-    pub params: Vec<(Path, Option<Variable>)>,
+    pub params: Vec<(String, Option<Variable>)>,
     pub returns: Option<Vec<Variable>>,
     pub graph: PartialCfg, // might need to turn this into DiGraph<Option<BasicBlock>, ()>
     pub cur_block: Vec<Statement>,
     pub cur_loc: Option<BasicBlockIdx>,
     pub start_block: BasicBlockIdx,
-
-    /// used to distinguish between method calls + function calls
-    pub known_paths: HashSet<String>,
 
     pub db: &'db ProjectDatabase,
     /// semantic model for type inference
@@ -101,8 +98,6 @@ impl<'db> LowerBody<'db> {
         let mut graph = PartialCfg::new();
         let start_block = BasicBlockIdx::from(graph.add_node(None));
         let mut params = Vec::new();
-
-        let mut known_paths = HashSet::new();
 
         // populate params
         for (i, param) in func.parameters.args.iter().enumerate() {
@@ -133,8 +128,7 @@ impl<'db> LowerBody<'db> {
                 }
             }
 
-            params.push((Path::new(&[identifier.to_string()]), Some(ty)));
-            known_paths.insert(identifier.to_string());
+            params.push((identifier.to_string(), Some(ty)));
         }
 
         // TODO: handle tuple returns + factor out the logic identical from above
@@ -159,7 +153,6 @@ impl<'db> LowerBody<'db> {
             cur_block: Vec::new(),
             cur_loc: Some(start_block),
             start_block,
-            known_paths,
             db,
             model,
         }
@@ -228,7 +221,7 @@ impl<'db> LowerBody<'db> {
     fn add_statement(
         &mut self,
         value: Expr,
-        target: Option<Path>,
+        target: Option<Expr>,
         range: TextRange,
         assign_end: Option<tower_lsp::lsp_types::Position>,
     ) {
@@ -275,14 +268,14 @@ impl<'db> LowerBody<'db> {
                         ASTExpr::Subscript(ExprSubscript { range, .. }) => *range,
                         _ => range,
                     };
-                    let target_path = self.lower_expr_to_path(target)?;
+                    let target_expr = self.lower_expr_to_expr(target)?;
                     let value = self.lower_expr_to_expr(value)?;
                     let assign_end_byte = target_range.end().to_usize();
                     let assign_end = Some(tower_lsp::lsp_types::Position::new(
                         0,
                         assign_end_byte as u32,
                     ));
-                    self.add_statement(value, Some(target_path), range, assign_end);
+                    self.add_statement(value, Some(target_expr), range, assign_end);
                 }
             }
             ASTStmt::AugAssign(StmtAugAssign {
@@ -299,11 +292,11 @@ impl<'db> LowerBody<'db> {
                     _ => range,
                 };
                 let target_ty = self.infer_type(&target);
-                let target_path = self.lower_expr_to_path(*target)?;
+                let target_expr = self.lower_expr_to_expr(*target.clone())?;
                 let value = self.lower_expr_to_expr(*value)?;
                 let range_converted = range;
                 let expr = Expr::binop(
-                    Expr::path(target_path.clone(), range_converted, target_ty.clone()),
+                    target_expr.clone(),
                     value.clone(),
                     op.into(),
                     range_converted,
@@ -314,7 +307,7 @@ impl<'db> LowerBody<'db> {
                     0,
                     assign_end_byte as u32,
                 ));
-                self.add_statement(expr, Some(target_path), range_converted, assign_end);
+                self.add_statement(expr, Some(target_expr), range_converted, assign_end);
             }
 
             ASTStmt::Expr(StmtExpr { value, range, .. }) => {
@@ -535,7 +528,7 @@ impl<'db> LowerBody<'db> {
         let ty = self.infer_type(&expr);
         match expr {
             ASTExpr::Name(ExprName { id, range, .. }) => {
-                Ok(Expr::path(Path::new(&[id.to_string()]), range, ty))
+                Ok(Expr::ident(id.to_string(), range, ty))
             }
 
             ASTExpr::BinOp(ExprBinOp {
@@ -592,42 +585,16 @@ impl<'db> LowerBody<'db> {
                     })
                     .collect::<Result<Vec<(String, Expr)>, anyhow::Error>>()?;
 
-                let mut path = self.lower_expr_to_path_inner(*func)?;
+                // Lower the function expression (can be Ident or Attribute chain)
+                let function_expr = self.lower_expr_to_expr(*func)?;
 
-                // currently we distinguish between method vs. function call by checking if the prefix is in known_paths.
-                // This doesn't catch nested cases, like 'self.foo.bar()' if 'self.foo' hasn't been written to in this function.
-                // which is something important to improve upon for object-oriented programming patterns (ex. pl.Lightning or nn.Module patterns),
-                // both for the self.foo.bar() pattern, as well as the class_instance.foo.bar() pattern. Seems tricky with Python's dynamism :/
-                let prefix_path = Path::new(&path[0..(path.len() - 1)]);
-                let classified_as_method_call =
-                    self.known_paths.contains(&prefix_path.to_dot_string());
-
-                if classified_as_method_call {
-                    Ok(Expr::call(
-                        Some(prefix_path),
-                        Path::new(&[path.pop().unwrap()]),
-                        pos_args,
-                        keyword_args,
-                        range,
-                        ty,
-                    ))
-                } else {
-                    Ok(Expr::call(
-                        None,
-                        Path::new(&path),
-                        pos_args,
-                        keyword_args,
-                        range,
-                        ty,
-                    ))
-                }
+                Ok(Expr::call(function_expr, pos_args, keyword_args, range, ty))
             }
             ASTExpr::Attribute(ExprAttribute {
                 attr, value, range, ..
             }) => {
-                let mut path = self.lower_expr_to_path_inner(*value)?;
-                path.push(attr.to_string());
-                Ok(Expr::path(Path::new(&path), range, ty))
+                let value_expr = self.lower_expr_to_expr(*value)?;
+                Ok(Expr::attribute(value_expr, attr.to_string(), range, ty))
             }
             ASTExpr::UnaryOp(ExprUnaryOp { operand, op, .. }) => {
                 let operand = self.lower_expr_to_expr(*operand)?;
@@ -702,36 +669,4 @@ impl<'db> LowerBody<'db> {
         }
     }
 
-    fn lower_expr_to_path(&mut self, expr: ASTExpr) -> Result<Path> {
-        let path = self.lower_expr_to_path_inner(expr)?;
-        let path = Path::new(&path);
-        self.known_paths.insert(path.to_dot_string());
-        Ok(path)
-    }
-
-    // forces expr to be interpreted as a path
-    fn lower_expr_to_path_inner(&mut self, expr: ASTExpr) -> Result<Vec<String>> {
-        match expr {
-            ASTExpr::Attribute(ExprAttribute { attr, value, .. }) => {
-                let mut path = self.lower_expr_to_path_inner(*value)?;
-                path.push(attr.to_string());
-                Ok(path)
-            }
-            ASTExpr::Subscript(ExprSubscript { slice, value, .. }) => {
-                let mut path = self.lower_expr_to_path_inner(*value)?;
-                let slice_path = self.lower_expr_to_path_inner(*slice)?;
-                path.extend(slice_path);
-                Ok(path)
-            }
-            ASTExpr::Name(ExprName { id, .. }) => Ok(vec![id.to_string()]),
-            ASTExpr::Call(ExprCall { func, .. }) => {
-                let path = self.lower_expr_to_path_inner(*func)?;
-                Ok(path)
-            }
-
-            ASTExpr::Slice(ExprSlice { .. }) => todo!("slice as part of path"),
-
-            _ => unreachable!("got something weird as part of a path: {:#?}", expr),
-        }
-    }
 }

@@ -77,20 +77,19 @@ impl fmt::Display for BasicBlock {
 impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.kind {
-            ExprKind::Path(path) => write!(f, "{}", path),
+            ExprKind::Ident(name) => write!(f, "{}", name),
+            ExprKind::Attribute { value, attr } => {
+                write!(f, "{}.{}", value, attr)
+            }
             ExprKind::Constant(constant) => write!(f, "{}", constant),
             ExprKind::Binop { left, right, op } => {
                 write!(f, "{} {} {}", left, op, right)
             }
             ExprKind::Call {
-                receiver,
                 function,
                 pos_args,
                 keyword_args,
             } => {
-                if let Some(recv) = receiver {
-                    write!(f, "{}.", recv)?;
-                }
                 write!(f, "{}", function)?;
                 write!(f, "(")?;
 
@@ -204,18 +203,6 @@ impl fmt::Display for Terminator {
                 ),
             },
         }
-    }
-}
-
-impl fmt::Display for Path {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for (i, part) in self.parts().iter().enumerate() {
-            if i > 0 {
-                write!(f, ".")?;
-            }
-            write!(f, "{}", part)?;
-        }
-        Ok(())
     }
 }
 
