@@ -244,6 +244,7 @@ pub struct Statement {
 #[derive(Clone, Debug)]
 pub struct Expr {
     pub kind: ExprKind,
+    pub ty: Type,
     pub span: SourceSpan,
 }
 
@@ -254,13 +255,14 @@ pub fn range_to_span(range: TextRange) -> SourceSpan {
 }
 
 impl Expr {
-    pub fn binop(left: Expr, right: Expr, op: Binop, range: TextRange) -> Expr {
+    pub fn binop(left: Expr, right: Expr, op: Binop, range: TextRange, ty: Type) -> Expr {
         Expr {
             kind: ExprKind::Binop {
                 left: Box::new(left),
                 right: Box::new(right),
                 op,
             },
+            ty,
             span: range_to_span(range),
         }
     }
@@ -271,6 +273,7 @@ impl Expr {
         pos_args: Vec<Expr>,
         keyword_args: Vec<(String, Expr)>,
         range: TextRange,
+        ty: Type,
     ) -> Expr {
         Expr {
             kind: ExprKind::Call {
@@ -279,37 +282,42 @@ impl Expr {
                 pos_args,
                 keyword_args,
             },
+            ty,
             span: range_to_span(range),
         }
     }
 
-    pub fn constant(range: TextRange, constant: Constant) -> Expr {
+    pub fn constant(range: TextRange, constant: Constant, ty: Type) -> Expr {
         Expr {
             kind: ExprKind::Constant(constant),
+            ty,
             span: range_to_span(range),
         }
     }
 
-    pub fn path(path: Path, range: TextRange) -> Expr {
+    pub fn path(path: Path, range: TextRange, ty: Type) -> Expr {
         Expr {
             kind: ExprKind::Path(path),
+            ty,
             span: range_to_span(range),
         }
     }
 
-    pub fn index(range: TextRange, expr: Expr, index: Vec<Either<Expr, Slice>>) -> Expr {
+    pub fn index(range: TextRange, expr: Expr, index: Vec<Either<Expr, Slice>>, ty: Type) -> Expr {
         Expr {
             kind: ExprKind::Index {
                 receiver: Box::new(expr),
                 index,
             },
+            ty,
             span: range_to_span(range),
         }
     }
 
-    pub fn tuple(elts: Vec<Expr>, range: TextRange) -> Expr {
+    pub fn tuple(elts: Vec<Expr>, range: TextRange, ty: Type) -> Expr {
         Expr {
             kind: ExprKind::Tuple(elts),
+            ty,
             span: range_to_span(range),
         }
     }
@@ -398,6 +406,21 @@ impl From<Operator> for Binop {
             Operator::BitAnd => Binop::BitAnd,
             Operator::FloorDiv => Binop::FloorDiv,
         }
+    }
+}
+
+// For now, we use a unit type as a placeholder for type information.
+// This provides a layer of indirection that allows for future expansion
+// beyond just aliasing ty_python_semantic's Type.
+#[derive(Clone, Debug)]
+pub struct Type;
+
+impl Type {
+    pub fn from_inferred<'db>(ty: Option<ty_python_semantic::types::Type<'db>>) -> Self {
+        // Clone/convert the inferred type to avoid lifetime issues
+        // For now, we just return a unit type as a placeholder
+        // In the future, we can store meaningful type information here
+        Self
     }
 }
 

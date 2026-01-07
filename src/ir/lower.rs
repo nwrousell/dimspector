@@ -15,11 +15,11 @@ use ruff_python_ast::{
 };
 use ruff_text_size::TextRange;
 use ty_project::ProjectDatabase;
-use ty_python_semantic::SemanticModel;
+use ty_python_semantic::{HasType, SemanticModel};
 
 use crate::{
     analysis::{DimKind, DimVar},
-    ir::types::{Binop, Constant, ExprKind, Function, Slice},
+    ir::types::{Binop, Constant, ExprKind, Function, Slice, Type},
 };
 use crate::{
     analysis::{Shape, Variable},
@@ -165,6 +165,14 @@ impl<'db> LowerBody<'db> {
         }
     }
 
+    /// Infer the type of an AST expression using the semantic model.
+    /// This provides a layer of indirection that allows for future expansion
+    /// beyond just aliasing ty_python_semantic's Type.
+    fn infer_type(&self, expr: &ASTExpr) -> Type {
+        let inferred = expr.inferred_type(self.model);
+        Type::from_inferred(inferred)
+    }
+
     fn lower_func_body(&mut self, body: &[ASTStmt]) -> Result<()> {
         self.lower_body(body)?;
 
@@ -290,14 +298,16 @@ impl<'db> LowerBody<'db> {
                     ASTExpr::Subscript(ExprSubscript { range, .. }) => *range,
                     _ => range,
                 };
+                let target_ty = self.infer_type(&target);
                 let target_path = self.lower_expr_to_path(*target)?;
                 let value = self.lower_expr_to_expr(*value)?;
                 let range_converted = range;
                 let expr = Expr::binop(
-                    Expr::path(target_path.clone(), range_converted),
+                    Expr::path(target_path.clone(), range_converted, target_ty.clone()),
                     value.clone(),
                     op.into(),
                     range_converted,
+                    target_ty,
                 );
                 let assign_end_byte = target_range.end().to_usize();
                 let assign_end = Some(tower_lsp::lsp_types::Position::new(
@@ -522,9 +532,10 @@ impl<'db> LowerBody<'db> {
     }
 
     fn lower_expr_to_expr(&mut self, expr: ASTExpr) -> Result<Expr> {
+        let ty = self.infer_type(&expr);
         match expr {
             ASTExpr::Name(ExprName { id, range, .. }) => {
-                Ok(Expr::path(Path::new(&[id.to_string()]), range))
+                Ok(Expr::path(Path::new(&[id.to_string()]), range, ty))
             }
 
             ASTExpr::BinOp(ExprBinOp {
@@ -536,7 +547,7 @@ impl<'db> LowerBody<'db> {
             }) => {
                 let left = self.lower_expr_to_expr(*left)?;
                 let right = self.lower_expr_to_expr(*right)?;
-                Ok(Expr::binop(left, right, Binop::from(op), range))
+                Ok(Expr::binop(left, right, Binop::from(op), range, ty))
             }
 
             ASTExpr::NumberLiteral(ExprNumberLiteral { range, value, .. }) => {
@@ -545,15 +556,15 @@ impl<'db> LowerBody<'db> {
                     Number::Float(f) => Constant::Float(f),
                     Number::Complex { .. } => Constant::None,
                 };
-                Ok(Expr::constant(range, constant))
+                Ok(Expr::constant(range, constant, ty))
             }
             ASTExpr::StringLiteral(ExprStringLiteral { range, .. }) => {
-                Ok(Expr::constant(range, Constant::Str("".to_string())))
+                Ok(Expr::constant(range, Constant::Str("".to_string()), ty))
             }
             ASTExpr::BooleanLiteral(expr) => {
-                Ok(Expr::constant(expr.range, Constant::Bool(expr.value)))
+                Ok(Expr::constant(expr.range, Constant::Bool(expr.value), ty))
             }
-            ASTExpr::NoneLiteral(expr) => Ok(Expr::constant(expr.range, Constant::None)),
+            ASTExpr::NoneLiteral(expr) => Ok(Expr::constant(expr.range, Constant::None, ty)),
 
             ASTExpr::Call(ExprCall {
                 arguments,
@@ -598,6 +609,7 @@ impl<'db> LowerBody<'db> {
                         pos_args,
                         keyword_args,
                         range,
+                        ty,
                     ))
                 } else {
                     Ok(Expr::call(
@@ -606,6 +618,7 @@ impl<'db> LowerBody<'db> {
                         pos_args,
                         keyword_args,
                         range,
+                        ty,
                     ))
                 }
             }
@@ -614,13 +627,14 @@ impl<'db> LowerBody<'db> {
             }) => {
                 let mut path = self.lower_expr_to_path_inner(*value)?;
                 path.push(attr.to_string());
-                Ok(Expr::path(Path::new(&path), range))
+                Ok(Expr::path(Path::new(&path), range, ty))
             }
             ASTExpr::UnaryOp(ExprUnaryOp { operand, op, .. }) => {
                 let operand = self.lower_expr_to_expr(*operand)?;
                 match (op, &operand.kind) {
                     (UnaryOp::USub, ExprKind::Constant(c)) => Ok(Expr {
                         kind: ExprKind::Constant(c.negate_if_num().unwrap()),
+                        ty,
                         span: operand.span,
                     }),
                     _ => Ok(operand),
@@ -640,12 +654,13 @@ impl<'db> LowerBody<'db> {
                     right,
                     Binop::from(ops.first().unwrap().clone()),
                     range,
+                    ty.clone(),
                 );
 
                 for (cmp, op) in comparators.into_iter().zip_eq(ops).skip(1) {
                     let left = bool_expr;
                     let right = self.lower_expr_to_expr(cmp)?;
-                    bool_expr = Expr::binop(left, right, Binop::from(op), range);
+                    bool_expr = Expr::binop(left, right, Binop::from(op), range, ty.clone());
                 }
 
                 Ok(bool_expr)
@@ -656,7 +671,7 @@ impl<'db> LowerBody<'db> {
                     .into_iter()
                     .map(|e| self.lower_expr_to_expr(e))
                     .collect::<Result<Vec<Expr>>>()?;
-                Ok(Expr::tuple(elts, range))
+                Ok(Expr::tuple(elts, range, ty))
             }
             ASTExpr::Subscript(ExprSubscript {
                 value,
@@ -667,11 +682,11 @@ impl<'db> LowerBody<'db> {
                 let expr = self.lower_expr_to_expr(*value)?;
                 let index = self.lower_expr_to_index(*slice)?;
 
-                Ok(Expr::index(range, expr, index))
+                Ok(Expr::index(range, expr, index, ty))
             }
 
             ASTExpr::FString(ExprFString { range, .. }) => {
-                Ok(Expr::constant(range, Constant::None))
+                Ok(Expr::constant(range, Constant::None, ty))
             }
 
             ASTExpr::List(ExprList { elts, range, .. }) => {
@@ -680,7 +695,7 @@ impl<'db> LowerBody<'db> {
                     .map(|e| self.lower_expr_to_expr(e))
                     .collect::<Result<Vec<Expr>>>()?;
 
-                Ok(Expr::tuple(elts, range))
+                Ok(Expr::tuple(elts, range, ty))
             }
 
             _ => todo!("unhandled expr: {expr:#?}"),
