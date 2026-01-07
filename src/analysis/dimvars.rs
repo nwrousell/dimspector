@@ -362,6 +362,24 @@ impl DimVar {
         self.kind.clone()
     }
 
+    pub fn binop(&self, other: &DimVar, op: crate::ir::types::Binop) -> crate::analysis::Variable {
+        use crate::analysis::Variable;
+        use crate::ir::types::Binop;
+
+        match op {
+            Binop::Add => Variable::DimVar(self.clone() + other.clone()),
+            Binop::Sub => Variable::DimVar(self.clone() - other.clone()),
+            Binop::Mult => Variable::DimVar(self.clone() * other.clone()),
+            Binop::FloorDiv => match (self.kind(), other.kind()) {
+                (DimKind::Concrete(c1), DimKind::Concrete(c2)) => Variable::DimVar(DimVar::new(
+                    DimKind::Concrete(num_integer::Integer::div_floor(&c1, &c2)),
+                )),
+                _ => Variable::Top,
+            },
+            _ => Variable::Top,
+        }
+    }
+
     pub fn div(&self, rhs: &Self) -> Result<Self> {
         let lhs_can = self.canonical();
         let rhs_can = rhs.canonical();

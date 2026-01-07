@@ -268,8 +268,8 @@ impl<'db> LowerBody<'db> {
                         ASTExpr::Subscript(ExprSubscript { range, .. }) => *range,
                         _ => range,
                     };
-                    let target_expr = self.lower_expr_to_expr(target)?;
-                    let value = self.lower_expr_to_expr(value)?;
+                    let target_expr = self.lower_expr(target)?;
+                    let value = self.lower_expr(value)?;
                     let assign_end_byte = target_range.end().to_usize();
                     let assign_end = Some(tower_lsp::lsp_types::Position::new(
                         0,
@@ -292,8 +292,8 @@ impl<'db> LowerBody<'db> {
                     _ => range,
                 };
                 let target_ty = self.infer_type(&target);
-                let target_expr = self.lower_expr_to_expr(*target.clone())?;
-                let value = self.lower_expr_to_expr(*value)?;
+                let target_expr = self.lower_expr(*target.clone())?;
+                let value = self.lower_expr(*value)?;
                 let range_converted = range;
                 let expr = Expr::binop(
                     target_expr.clone(),
@@ -311,7 +311,7 @@ impl<'db> LowerBody<'db> {
             }
 
             ASTStmt::Expr(StmtExpr { value, range, .. }) => {
-                let value = self.lower_expr_to_expr(*value)?;
+                let value = self.lower_expr(*value)?;
                 self.add_statement(value, None, range, None);
             }
 
@@ -331,7 +331,7 @@ impl<'db> LowerBody<'db> {
                 self.finish_block(Some(cond_block), jmp);
 
                 // which jumps to body or new block
-                let cond = self.lower_expr_to_expr(*test)?;
+                let cond = self.lower_expr(*test)?;
                 let jmp = Terminator::CondJump {
                     cond: Some(cond),
                     true_dst: body_block,
@@ -357,77 +357,76 @@ impl<'db> LowerBody<'db> {
                 elif_else_clauses,
                 ..
             }) => {
-                todo!(
-                    "re-implement lowering for if statements (ruff's AST has an arbitrary number of elif clauses)"
-                )
-                // let mut current_else_block = self.new_block();
-                // let join_block = self.new_block();
+                let mut current_else_block = self.new_block();
+                let join_block = self.new_block();
 
-                // let then_block = self.new_block();
-                // let cond = self.lower_expr_to_expr(*test)?;
-                // let jmp = Terminator::CondJump {
-                //     cond: Some(cond),
-                //     true_dst: then_block,
-                //     false_dst: current_else_block,
-                // };
-                // self.finish_block(Some(then_block), jmp);
+                let then_block = self.new_block();
+                let cond = self.lower_expr(*test)?;
+                let jmp = Terminator::CondJump {
+                    cond: Some(cond),
+                    true_dst: then_block,
+                    false_dst: current_else_block,
+                };
+                self.finish_block(Some(then_block), jmp);
 
-                // self.lower_body(&body)?;
-                // let jmp = Terminator::Jump(join_block);
-                // match self.cur_loc {
-                //     Some(_) => {
-                //         self.finish_block(Some(current_else_block), jmp.clone());
-                //     }
-                //     None => self.cur_loc = Some(current_else_block),
-                // };
+                self.lower_body(&body)?;
+                let jmp = Terminator::Jump(join_block);
+                match self.cur_loc {
+                    Some(_) => {
+                        self.finish_block(Some(current_else_block), jmp.clone());
+                    }
+                    None => self.cur_loc = Some(current_else_block),
+                };
 
-                // for clause in elif_else_clauses.iter() {
-                //     if let Some(test) = &clause.test {
-                //         let elif_block = self.new_block();
-                //         let next_else_block = self.new_block();
-                //         let cond = self.lower_expr_to_expr(test.clone())?;
-                //         let jmp = Terminator::CondJump {
-                //             cond: Some(cond),
-                //             true_dst: elif_block,
-                //             false_dst: next_else_block,
-                //         };
-                //         self.finish_block(Some(elif_block), jmp);
+                for clause in elif_else_clauses.iter() {
+                    if let Some(test) = &clause.test {
+                        // elif
+                        let elif_block = self.new_block();
+                        let next_else_block = self.new_block();
+                        let cond = self.lower_expr(test.clone())?;
+                        let jmp = Terminator::CondJump {
+                            cond: Some(cond),
+                            true_dst: elif_block,
+                            false_dst: next_else_block,
+                        };
+                        self.finish_block(Some(elif_block), jmp);
 
-                //         self.lower_body(&clause.body)?;
-                //         let jmp_to_join = Terminator::Jump(join_block);
-                //         match self.cur_loc {
-                //             Some(_) => {
-                //                 self.finish_block(Some(next_else_block), jmp_to_join.clone());
-                //             }
-                //             None => self.cur_loc = Some(next_else_block),
-                //         };
-                //         current_else_block = next_else_block;
-                //     } else {
-                //         self.lower_body(&clause.body)?;
-                //         let jmp_to_join = Terminator::Jump(join_block);
-                //         match self.cur_loc {
-                //             Some(_) => {
-                //                 self.finish_block(Some(join_block), jmp_to_join);
-                //             }
-                //             None => self.cur_loc = Some(join_block),
-                //         };
-                //     }
-                // }
+                        self.lower_body(&clause.body)?;
+                        let jmp_to_join = Terminator::Jump(join_block);
+                        match self.cur_loc {
+                            Some(_) => {
+                                self.finish_block(Some(next_else_block), jmp_to_join.clone());
+                            }
+                            None => self.cur_loc = Some(next_else_block),
+                        };
+                        current_else_block = next_else_block;
+                    } else {
+                        // plain else
+                        self.lower_body(&clause.body)?;
+                        let jmp_to_join = Terminator::Jump(join_block);
+                        match self.cur_loc {
+                            Some(_) => {
+                                self.finish_block(Some(join_block), jmp_to_join);
+                            }
+                            None => self.cur_loc = Some(join_block),
+                        };
+                    }
+                }
 
-                // if !elif_else_clauses.is_empty()
-                //     && elif_else_clauses
-                //         .last()
-                //         .map(|c| c.test.is_some())
-                //         .unwrap_or(false)
-                // {
-                //     let jmp_to_join = Terminator::Jump(join_block);
-                //     match self.cur_loc {
-                //         Some(_) => {
-                //             self.finish_block(Some(join_block), jmp_to_join);
-                //         }
-                //         None => self.cur_loc = Some(join_block),
-                //     };
-                // }
+                if !elif_else_clauses.is_empty()
+                    && elif_else_clauses
+                        .last()
+                        .map(|c| c.test.is_some())
+                        .unwrap_or(false)
+                {
+                    let jmp_to_join = Terminator::Jump(join_block);
+                    match self.cur_loc {
+                        Some(_) => {
+                            self.finish_block(Some(join_block), jmp_to_join);
+                        }
+                        None => self.cur_loc = Some(join_block),
+                    };
+                }
             }
             ASTStmt::For(StmtFor { body, orelse, .. }) => {
                 if !orelse.is_empty() {
@@ -466,7 +465,7 @@ impl<'db> LowerBody<'db> {
             ASTStmt::Return(StmtReturn { value, .. }) => {
                 let value = match value {
                     None => None,
-                    Some(expr) => Some(self.lower_expr_to_expr(*expr)?),
+                    Some(expr) => Some(self.lower_expr(*expr)?),
                 };
                 let ret = Terminator::Return(value);
                 self.finish_block(None, ret);
@@ -475,9 +474,8 @@ impl<'db> LowerBody<'db> {
             ASTStmt::With(StmtWith {
                 body, items, range, ..
             }) => {
-                let range_converted = range;
                 for item in items.iter() {
-                    let expr = self.lower_expr_to_expr(item.context_expr.clone())?;
+                    let expr = self.lower_expr(item.context_expr.clone())?;
                     self.add_statement(expr, None, range, None);
                 }
                 self.lower_body(&body)?
@@ -491,11 +489,11 @@ impl<'db> LowerBody<'db> {
 
     fn lower_expr_to_slice(&mut self, expr_slice: ExprSlice) -> Result<Slice> {
         let lower = match &expr_slice.lower {
-            Some(expr_lower) => Some(self.lower_expr_to_expr((**expr_lower).clone())?),
+            Some(expr_lower) => Some(self.lower_expr((**expr_lower).clone())?),
             None => None,
         };
         let upper = match &expr_slice.upper {
-            Some(expr_upper) => Some(self.lower_expr_to_expr((**expr_upper).clone())?),
+            Some(expr_upper) => Some(self.lower_expr((**expr_upper).clone())?),
             None => None,
         };
 
@@ -514,22 +512,20 @@ impl<'db> LowerBody<'db> {
                         ASTExpr::Slice(expr_slice) => {
                             Either::Right(self.lower_expr_to_slice(expr_slice)?)
                         }
-                        _ => Either::Left(self.lower_expr_to_expr(elt)?),
+                        _ => Either::Left(self.lower_expr(elt)?),
                     })
                 }
 
                 res
             }
-            _ => vec![Either::Left(self.lower_expr_to_expr(expr)?)],
+            _ => vec![Either::Left(self.lower_expr(expr)?)],
         })
     }
 
-    fn lower_expr_to_expr(&mut self, expr: ASTExpr) -> Result<Expr> {
+    fn lower_expr(&mut self, expr: ASTExpr) -> Result<Expr> {
         let ty = self.infer_type(&expr);
         match expr {
-            ASTExpr::Name(ExprName { id, range, .. }) => {
-                Ok(Expr::ident(id.to_string(), range, ty))
-            }
+            ASTExpr::Name(ExprName { id, range, .. }) => Ok(Expr::ident(id.to_string(), range, ty)),
 
             ASTExpr::BinOp(ExprBinOp {
                 left,
@@ -538,8 +534,8 @@ impl<'db> LowerBody<'db> {
                 range,
                 ..
             }) => {
-                let left = self.lower_expr_to_expr(*left)?;
-                let right = self.lower_expr_to_expr(*right)?;
+                let left = self.lower_expr(*left)?;
+                let right = self.lower_expr(*right)?;
                 Ok(Expr::binop(left, right, Binop::from(op), range, ty))
             }
 
@@ -568,14 +564,14 @@ impl<'db> LowerBody<'db> {
                 let pos_args = arguments
                     .args
                     .iter()
-                    .map(|arg| self.lower_expr_to_expr(arg.clone()))
+                    .map(|arg| self.lower_expr(arg.clone()))
                     .collect::<Result<Vec<_>, anyhow::Error>>()?;
 
                 let keyword_args = arguments
                     .keywords
                     .iter()
                     .map(|Keyword { arg, value, .. }| {
-                        let e = self.lower_expr_to_expr(value.clone())?;
+                        let e = self.lower_expr(value.clone())?;
                         Ok((
                             arg.clone()
                                 .expect("got a keyword argument without a keyword?")
@@ -586,18 +582,18 @@ impl<'db> LowerBody<'db> {
                     .collect::<Result<Vec<(String, Expr)>, anyhow::Error>>()?;
 
                 // Lower the function expression (can be Ident or Attribute chain)
-                let function_expr = self.lower_expr_to_expr(*func)?;
+                let function_expr = self.lower_expr(*func)?;
 
                 Ok(Expr::call(function_expr, pos_args, keyword_args, range, ty))
             }
             ASTExpr::Attribute(ExprAttribute {
                 attr, value, range, ..
             }) => {
-                let value_expr = self.lower_expr_to_expr(*value)?;
+                let value_expr = self.lower_expr(*value)?;
                 Ok(Expr::attribute(value_expr, attr.to_string(), range, ty))
             }
             ASTExpr::UnaryOp(ExprUnaryOp { operand, op, .. }) => {
-                let operand = self.lower_expr_to_expr(*operand)?;
+                let operand = self.lower_expr(*operand)?;
                 match (op, &operand.kind) {
                     (UnaryOp::USub, ExprKind::Constant(c)) => Ok(Expr {
                         kind: ExprKind::Constant(c.negate_if_num().unwrap()),
@@ -614,8 +610,8 @@ impl<'db> LowerBody<'db> {
                 range,
                 ..
             }) => {
-                let left = self.lower_expr_to_expr(*left)?;
-                let right = self.lower_expr_to_expr(comparators.first().unwrap().clone())?;
+                let left = self.lower_expr(*left)?;
+                let right = self.lower_expr(comparators.first().unwrap().clone())?;
                 let mut bool_expr = Expr::binop(
                     left,
                     right,
@@ -626,7 +622,7 @@ impl<'db> LowerBody<'db> {
 
                 for (cmp, op) in comparators.into_iter().zip_eq(ops).skip(1) {
                     let left = bool_expr;
-                    let right = self.lower_expr_to_expr(cmp)?;
+                    let right = self.lower_expr(cmp)?;
                     bool_expr = Expr::binop(left, right, Binop::from(op), range, ty.clone());
                 }
 
@@ -636,7 +632,7 @@ impl<'db> LowerBody<'db> {
             ASTExpr::Tuple(ExprTuple { range, elts, .. }) => {
                 let elts = elts
                     .into_iter()
-                    .map(|e| self.lower_expr_to_expr(e))
+                    .map(|e| self.lower_expr(e))
                     .collect::<Result<Vec<Expr>>>()?;
                 Ok(Expr::tuple(elts, range, ty))
             }
@@ -646,7 +642,7 @@ impl<'db> LowerBody<'db> {
                 range,
                 ..
             }) => {
-                let expr = self.lower_expr_to_expr(*value)?;
+                let expr = self.lower_expr(*value)?;
                 let index = self.lower_expr_to_index(*slice)?;
 
                 Ok(Expr::index(range, expr, index, ty))
@@ -659,7 +655,7 @@ impl<'db> LowerBody<'db> {
             ASTExpr::List(ExprList { elts, range, .. }) => {
                 let elts = elts
                     .into_iter()
-                    .map(|e| self.lower_expr_to_expr(e))
+                    .map(|e| self.lower_expr(e))
                     .collect::<Result<Vec<Expr>>>()?;
 
                 Ok(Expr::tuple(elts, range, ty))
@@ -668,5 +664,4 @@ impl<'db> LowerBody<'db> {
             _ => todo!("unhandled expr: {expr:#?}"),
         }
     }
-
 }
