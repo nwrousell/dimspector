@@ -19,7 +19,7 @@ use ty_python_semantic::{HasType, SemanticModel};
 
 use crate::{
     analysis::{DimKind, DimVar},
-    ir::types::{Binop, Class, Constant, ExprKind, Function, Slice, Type, intern},
+    ir::types::{Binop, Class, Constant, ExprKind, Function, Identifier, Slice, Type, intern},
 };
 use crate::{
     analysis::{Shape, Variable},
@@ -30,13 +30,14 @@ pub fn lower_class<'db>(
     class_def: &StmtClassDef,
     db: &'db ProjectDatabase,
     model: &'db SemanticModel<'db>,
+    class_names: &std::collections::HashSet<Identifier>,
 ) -> Result<Class> {
     let mut methods = HashMap::new();
 
     // Process methods: iterate through body to find StmtFunctionDef
     for stmt in &class_def.body {
         if let ASTStmt::FunctionDef(method) = stmt {
-            let lowered_method = lower_func(method, db, model)?;
+            let lowered_method = lower_func(method, db, model, class_names)?;
             methods.insert(lowered_method.identifier, lowered_method);
         }
     }
@@ -51,8 +52,9 @@ pub fn lower_func<'db>(
     func: &StmtFunctionDef,
     db: &'db ProjectDatabase,
     model: &'db SemanticModel<'db>,
+    class_names: &std::collections::HashSet<Identifier>,
 ) -> Result<Function> {
-    let mut lowerer = LowerBody::new(func, db, model);
+    let mut lowerer = LowerBody::new(func, db, model, class_names);
 
     lowerer.lower_func_body(&func.body)?;
 
@@ -108,6 +110,8 @@ struct LowerBody<'db> {
     pub _db: &'db ProjectDatabase,
     /// semantic model for type inference
     pub model: &'db SemanticModel<'db>,
+    /// Set of class identifiers for callable type inference heuristic
+    pub class_names: &'db std::collections::HashSet<Identifier>,
 }
 
 impl<'db> LowerBody<'db> {
@@ -115,6 +119,7 @@ impl<'db> LowerBody<'db> {
         func: &StmtFunctionDef,
         db: &'db ProjectDatabase,
         model: &'db SemanticModel<'db>,
+        class_names: &'db std::collections::HashSet<Identifier>,
     ) -> Self {
         let mut graph = PartialCfg::new();
         let start_block = BasicBlockIdx::from(graph.add_node(None));
@@ -168,6 +173,7 @@ impl<'db> LowerBody<'db> {
             start_block,
             _db: db,
             model,
+            class_names,
         }
     }
 
@@ -209,12 +215,39 @@ impl<'db> LowerBody<'db> {
         None
     }
 
-    /// Infer the type of an AST expression using the semantic model.
-    /// This provides a layer of indirection that allows for future expansion
-    /// beyond just aliasing ty_python_semantic's Type.
-    fn infer_type(&self, expr: &ASTExpr) -> Type {
-        let inferred = expr.inferred_type(self.model);
-        Type::from_inferred(inferred)
+    /// Infer the callable type of an AST expression using some hacky heuristics
+    fn infer_callable_type(&self, expr: &ASTExpr) -> Type {
+        Self::infer_callable_type_heuristic(expr, self.class_names)
+    }
+
+    /// Infer callable type by heuristic: if it's in the list of class names, it's a constructor.
+    /// If it's an attribute off of a class, it's a method, else default to function.
+    fn infer_callable_type_heuristic(
+        expr: &ASTExpr,
+        class_names: &std::collections::HashSet<Identifier>,
+    ) -> Type {
+        match expr {
+            ASTExpr::Name(ExprName { id, .. }) => {
+                let name = intern(id.as_str());
+                if class_names.contains(&name) {
+                    Type::Constructor(name)
+                } else {
+                    Type::Function
+                }
+            }
+            ASTExpr::Attribute(ExprAttribute { value, attr, .. }) => {
+                // Check if the value is a class name - if so, this is a method
+                if let ASTExpr::Name(ExprName { id, .. }) = value.as_ref() {
+                    let class_name = intern(id.as_str());
+                    if class_names.contains(&class_name) {
+                        return Type::Method(class_name);
+                    }
+                }
+                // Otherwise, it's a function call on some other object
+                Type::Function
+            }
+            _ => Type::Other,
+        }
     }
 
     fn lower_func_body(&mut self, body: &[ASTStmt]) -> Result<()> {
@@ -342,7 +375,7 @@ impl<'db> LowerBody<'db> {
                     ASTExpr::Subscript(ExprSubscript { range, .. }) => *range,
                     _ => range,
                 };
-                let target_ty = self.infer_type(&target);
+                let target_ty = self.infer_callable_type(&target);
                 let target_expr = self.lower_expr(*target.clone())?;
                 let value = self.lower_expr(*value)?;
                 let range_converted = range;
@@ -574,7 +607,8 @@ impl<'db> LowerBody<'db> {
     }
 
     fn lower_expr(&mut self, expr: ASTExpr) -> Result<Expr> {
-        let ty = self.infer_type(&expr);
+        // For non-call expressions, use Other as the callable type
+        let ty = Type::Other;
         match expr {
             ASTExpr::Name(ExprName { id, range, .. }) => {
                 Ok(Expr::ident(intern(id.as_str()), range, ty))
@@ -636,10 +670,19 @@ impl<'db> LowerBody<'db> {
                     })
                     .collect::<Result<Vec<_>, anyhow::Error>>()?;
 
+                // Infer callable type from the function expression (can be Ident or Attribute chain)
+                let callable_ty = self.infer_callable_type(func.as_ref());
+
                 // Lower the function expression (can be Ident or Attribute chain)
                 let function_expr = self.lower_expr(*func)?;
 
-                Ok(Expr::call(function_expr, pos_args, keyword_args, range, ty))
+                Ok(Expr::call(
+                    function_expr,
+                    pos_args,
+                    keyword_args,
+                    range,
+                    callable_ty,
+                ))
             }
             ASTExpr::Attribute(ExprAttribute {
                 attr, value, range, ..

@@ -501,19 +501,18 @@ impl From<Operator> for Binop {
     }
 }
 
-// For now, we use a unit type as a placeholder for type information.
-// This provides a layer of indirection that allows for future expansion
-// beyond just aliasing ty_python_semantic's Type.
+/// Represents the callable type of an expression.
+/// Relies on hacky heuristics to avoid having to implement full type inference right now.
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
-pub struct Type;
-
-impl Type {
-    pub fn from_inferred<'db>(ty: Option<ty_python_semantic::types::Type<'db>>) -> Self {
-        // Clone/convert the inferred type to avoid lifetime issues
-        // For now, we just return a unit type as a placeholder
-        // In the future, we can store meaningful type information here
-        Self
-    }
+pub enum Type {
+    /// Class constructor - the identifier is the class name
+    Constructor(Identifier),
+    /// Bound method - the identifier is the class that owns the method
+    Method(Identifier),
+    /// Regular function (not a method or constructor)
+    Function,
+    /// Other types or unknown
+    Other,
 }
 
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
