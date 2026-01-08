@@ -3,19 +3,29 @@ mod print;
 pub mod types;
 
 use anyhow::Result;
+use ty_python_semantic::SemanticModel;
 
 use crate::parse::ParsedFile;
-use lower::lower_func;
+use lower::{lower_class, lower_func};
 pub use types::{
-    Annotation, BasicBlock, BasicBlockIdx, Cfg, Expr, Function, Parameter, Path, Program,
-    Statement, Terminator,
+    Annotation, BasicBlock, BasicBlockIdx, Cfg, Class, Expr, Function, Identifier, Parameter,
+    Program, Statement, Terminator, intern, resolve,
 };
 
 pub fn lower(parsed: &ParsedFile) -> Result<Program> {
+    let semantic_model = SemanticModel::new(&parsed.db, parsed.file);
+
     let mut functions = Vec::new();
     for func in &parsed.functions {
-        let lowered_func = lower_func(func, &parsed.db, &parsed.semantic_model)?;
+        let lowered_func = lower_func(func, &parsed.db, &semantic_model)?;
         functions.push(lowered_func);
     }
-    Ok(Program { functions })
+
+    let mut classes = Vec::new();
+    for class_def in &parsed.classes {
+        let lowered_class = lower_class(class_def, &parsed.db, &semantic_model)?;
+        classes.push(lowered_class);
+    }
+
+    Ok(Program { functions, classes })
 }

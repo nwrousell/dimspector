@@ -34,6 +34,7 @@ ty_module_resolver = { git = "https://github.com/astral-sh/ruff.git", rev = "4c4
 ty_project = { git = "https://github.com/astral-sh/ruff.git", rev = "4c4e652b38f3e9711eb5532aabf2571309d73900", package = "ty_project", features = [
     "testing",
 ] }
+string-interner = "0.18"
 
 [dev-dependencies]
 walkdir = "2.5"

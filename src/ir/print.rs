@@ -1,13 +1,11 @@
 use core::fmt;
 
-use crate::ir::types::{Constant, DimRange, Location, Slice};
+use crate::ir::types::{Constant, DimRange, Location, Slice, resolve};
 use crate::utils::{indent, write_comma_separated};
 
 use crate::ir::{
-    Function, Program,
-    types::{
-        BasicBlock, BasicBlockIdx, Binop, Expr, ExprKind, Parameter, Path, Statement, Terminator,
-    },
+    Class, Function, Program,
+    types::{BasicBlock, BasicBlockIdx, Binop, Expr, ExprKind, Parameter, Statement, Terminator},
 };
 
 impl fmt::Display for Program {
@@ -15,13 +13,16 @@ impl fmt::Display for Program {
         for func in &self.functions {
             write!(f, "{func}\n\n")?;
         }
+        for class in &self.classes {
+            write!(f, "{class}\n\n")?;
+        }
         Ok(())
     }
 }
 
 impl fmt::Display for Function {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "def {}(", self.identifier)?;
+        write!(f, "def {}(", resolve(self.identifier))?;
         write_comma_separated(f, &self.params)?;
         write!(f, ")")?;
         if let Some(returns) = &self.returns {
@@ -44,6 +45,27 @@ impl fmt::Display for Function {
     }
 }
 
+impl fmt::Display for Class {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "class {}:\n", resolve(self.identifier))?;
+
+        // Print methods
+        if !self.methods.is_empty() {
+            let mut first = true;
+            for (_, method) in &self.methods {
+                if !first {
+                    write!(f, "\n")?;
+                }
+                let method_content = format!("{}", method);
+                write!(f, "{}\n", indent(&method_content))?;
+                first = false;
+            }
+        }
+
+        Ok(())
+    }
+}
+
 impl fmt::Display for Location {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}[{}]", self.block, self.instr)
@@ -52,7 +74,7 @@ impl fmt::Display for Location {
 
 impl fmt::Display for Parameter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)?;
+        write!(f, "{}", resolve(self.0))?;
         if let Some(annotation) = &self.1 {
             write!(f, ": {}", annotation)?;
         }
@@ -77,9 +99,9 @@ impl fmt::Display for BasicBlock {
 impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.kind {
-            ExprKind::Ident(name) => write!(f, "{}", name),
+            ExprKind::Ident(name) => write!(f, "{}", resolve(*name)),
             ExprKind::Attribute { value, attr } => {
-                write!(f, "{}.{}", value, attr)
+                write!(f, "{}.{}", value, resolve(*attr))
             }
             ExprKind::Constant(constant) => write!(f, "{}", constant),
             ExprKind::Binop { left, right, op } => {
@@ -106,7 +128,7 @@ impl fmt::Display for Expr {
                     if !first {
                         write!(f, ", ")?;
                     }
-                    write!(f, "{}={}", key, value)?;
+                    write!(f, "{}={}", resolve(*key), value)?;
                     first = false;
                 }
 

@@ -10,8 +10,8 @@ use petgraph::{
 use ruff_python_ast::{
     Expr as ASTExpr, ExprAttribute, ExprBinOp, ExprCall, ExprCompare, ExprFString, ExprList,
     ExprName, ExprNumberLiteral, ExprSlice, ExprStringLiteral, ExprSubscript, ExprTuple,
-    ExprUnaryOp, Keyword, Number, Stmt as ASTStmt, StmtAssign, StmtAugAssign, StmtExpr, StmtFor,
-    StmtFunctionDef, StmtIf, StmtReturn, StmtWhile, StmtWith, UnaryOp,
+    ExprUnaryOp, Keyword, Number, Stmt as ASTStmt, StmtAssign, StmtAugAssign, StmtClassDef,
+    StmtExpr, StmtFor, StmtFunctionDef, StmtIf, StmtReturn, StmtWhile, StmtWith, UnaryOp,
 };
 use ruff_text_size::TextRange;
 use ty_project::ProjectDatabase;
@@ -19,12 +19,33 @@ use ty_python_semantic::{HasType, SemanticModel};
 
 use crate::{
     analysis::{DimKind, DimVar},
-    ir::types::{Binop, Constant, ExprKind, Function, Slice, Type},
+    ir::types::{Binop, Class, Constant, ExprKind, Function, Slice, Type, intern},
 };
 use crate::{
     analysis::{Shape, Variable},
-    ir::types::{BasicBlock, BasicBlockIdx, Cfg, Expr, PartialCfg, Path, Statement, Terminator},
+    ir::types::{BasicBlock, BasicBlockIdx, Cfg, Expr, PartialCfg, Statement, Terminator},
 };
+
+pub fn lower_class<'db>(
+    class_def: &StmtClassDef,
+    db: &'db ProjectDatabase,
+    model: &'db SemanticModel<'db>,
+) -> Result<Class> {
+    let mut methods = HashMap::new();
+
+    // Process methods: iterate through body to find StmtFunctionDef
+    for stmt in &class_def.body {
+        if let ASTStmt::FunctionDef(method) = stmt {
+            let lowered_method = lower_func(method, db, model)?;
+            methods.insert(lowered_method.identifier, lowered_method);
+        }
+    }
+
+    Ok(Class {
+        identifier: intern(class_def.name.as_str()),
+        methods,
+    })
+}
 
 pub fn lower_func<'db>(
     func: &StmtFunctionDef,
@@ -69,7 +90,7 @@ pub fn lower_func<'db>(
     }
 
     Ok(Function::new(
-        func.name.to_string(),
+        intern(func.name.as_str()),
         cfg,
         lowerer.params,
         lowerer.returns,
@@ -77,14 +98,14 @@ pub fn lower_func<'db>(
 }
 
 struct LowerBody<'db> {
-    pub params: Vec<(String, Option<Variable>)>,
+    pub params: Vec<(crate::ir::Identifier, Option<Variable>)>,
     pub returns: Option<Vec<Variable>>,
     pub graph: PartialCfg, // might need to turn this into DiGraph<Option<BasicBlock>, ()>
     pub cur_block: Vec<Statement>,
     pub cur_loc: Option<BasicBlockIdx>,
     pub start_block: BasicBlockIdx,
 
-    pub db: &'db ProjectDatabase,
+    pub _db: &'db ProjectDatabase,
     /// semantic model for type inference
     pub model: &'db SemanticModel<'db>,
 }
@@ -110,14 +131,13 @@ impl<'db> LowerBody<'db> {
             ))));
 
             if let Some(annotation) = &param.parameter.annotation {
-                if let ASTExpr::Subscript(subscript) = annotation.as_ref() {
+                // Try to extract shape string from annotation (supports both T["shape"] and Float[Tensor, "shape"])
+                if let Some(shape_str) = LowerBody::extract_shape_string(annotation) {
+                    ty = Variable::Tensor(Shape::from_str(&shape_str));
+                } else if let ASTExpr::Subscript(subscript) = annotation.as_ref() {
+                    // Handle int["dvar"] format
                     if let ASTExpr::Name(name) = subscript.value.as_ref() {
-                        if name.id.as_str() == "T" {
-                            if let ASTExpr::StringLiteral(shape_str) = subscript.slice.as_ref() {
-                                let shape_str = shape_str.value.to_str();
-                                ty = Variable::Tensor(Shape::from_str(shape_str));
-                            }
-                        } else if name.id.as_str() == "int" {
+                        if name.id.as_str() == "int" {
                             if let ASTExpr::StringLiteral(dvar_str) = subscript.slice.as_ref() {
                                 let dvar = dvar_str.value.to_str();
                                 ty =
@@ -128,21 +148,14 @@ impl<'db> LowerBody<'db> {
                 }
             }
 
-            params.push((identifier.to_string(), Some(ty)));
+            params.push((intern(identifier.as_str()), Some(ty)));
         }
 
         // TODO: handle tuple returns + factor out the logic identical from above
         let mut returns = None;
         if let Some(ret_ty) = &func.returns {
-            if let ASTExpr::Subscript(subscript) = ret_ty.as_ref() {
-                if let ASTExpr::Name(name) = subscript.value.as_ref() {
-                    if name.id.as_str() == "T" {
-                        if let ASTExpr::StringLiteral(shape_str) = subscript.slice.as_ref() {
-                            let shape_str = shape_str.value.to_str();
-                            returns = Some(vec![Variable::Tensor(Shape::from_str(shape_str))]);
-                        }
-                    }
-                }
+            if let Some(shape_str) = LowerBody::extract_shape_string(ret_ty) {
+                returns = Some(vec![Variable::Tensor(Shape::from_str(&shape_str))]);
             }
         }
 
@@ -153,9 +166,47 @@ impl<'db> LowerBody<'db> {
             cur_block: Vec::new(),
             cur_loc: Some(start_block),
             start_block,
-            db,
+            _db: db,
             model,
         }
+    }
+
+    /// Extract shape string from type annotation.
+    /// Supports both T["shape"] and Float[Tensor, "shape"] formats.
+    fn extract_shape_string(annotation: &ASTExpr) -> Option<String> {
+        if let ASTExpr::Subscript(subscript) = annotation {
+            // Handle T["shape"] format
+            if let ASTExpr::Name(name) = subscript.value.as_ref() {
+                if name.id.as_str() == "T" {
+                    if let ASTExpr::StringLiteral(shape_str) = subscript.slice.as_ref() {
+                        return Some(shape_str.value.to_str().to_string());
+                    }
+                }
+            }
+            // Handle Float[Tensor, "shape"] or other jaxtyping formats
+            if let ASTExpr::Name(name) = subscript.value.as_ref() {
+                // Check for jaxtyping types: Float, Int, Bool, etc.
+                let jaxtyping_types = ["Float", "Int", "Bool", "UInt", "Complex", "BFloat16"];
+                if jaxtyping_types.contains(&name.id.as_str()) {
+                    if let ASTExpr::Tuple(tuple) = subscript.slice.as_ref() {
+                        // Tuple should have [Tensor, "shape"]
+                        if tuple.elts.len() >= 2 {
+                            // First element should be Tensor (or other tensor types)
+                            if let ASTExpr::Name(tensor_type) = &tuple.elts[0] {
+                                let tensor_types = ["Tensor", "Array", "Shaped"];
+                                if tensor_types.contains(&tensor_type.id.as_str()) {
+                                    // Second element should be the shape string
+                                    if let ASTExpr::StringLiteral(shape_str) = &tuple.elts[1] {
+                                        return Some(shape_str.value.to_str().to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
     }
 
     /// Infer the type of an AST expression using the semantic model.
@@ -525,7 +576,9 @@ impl<'db> LowerBody<'db> {
     fn lower_expr(&mut self, expr: ASTExpr) -> Result<Expr> {
         let ty = self.infer_type(&expr);
         match expr {
-            ASTExpr::Name(ExprName { id, range, .. }) => Ok(Expr::ident(id.to_string(), range, ty)),
+            ASTExpr::Name(ExprName { id, range, .. }) => {
+                Ok(Expr::ident(intern(id.as_str()), range, ty))
+            }
 
             ASTExpr::BinOp(ExprBinOp {
                 left,
@@ -573,13 +626,15 @@ impl<'db> LowerBody<'db> {
                     .map(|Keyword { arg, value, .. }| {
                         let e = self.lower_expr(value.clone())?;
                         Ok((
-                            arg.clone()
-                                .expect("got a keyword argument without a keyword?")
-                                .to_string(),
+                            intern(
+                                arg.clone()
+                                    .expect("got a keyword argument without a keyword?")
+                                    .as_str(),
+                            ),
                             e,
                         ))
                     })
-                    .collect::<Result<Vec<(String, Expr)>, anyhow::Error>>()?;
+                    .collect::<Result<Vec<_>, anyhow::Error>>()?;
 
                 // Lower the function expression (can be Ident or Attribute chain)
                 let function_expr = self.lower_expr(*func)?;
@@ -590,7 +645,12 @@ impl<'db> LowerBody<'db> {
                 attr, value, range, ..
             }) => {
                 let value_expr = self.lower_expr(*value)?;
-                Ok(Expr::attribute(value_expr, attr.to_string(), range, ty))
+                Ok(Expr::attribute(
+                    value_expr,
+                    intern(attr.as_str()),
+                    range,
+                    ty,
+                ))
             }
             ASTExpr::UnaryOp(ExprUnaryOp { operand, op, .. }) => {
                 let operand = self.lower_expr(*operand)?;

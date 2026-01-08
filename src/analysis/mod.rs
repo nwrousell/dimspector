@@ -16,11 +16,11 @@ pub use crate::analysis::dimvars::{DimKind, DimVar};
 use crate::analysis::models::{Model, ModelContext};
 use crate::analysis::types::DimSlice;
 use crate::ir::types::{Binop, Constant, ExprKind, Location, Slice};
-use crate::ir::{Expr, Parameter, Path, Statement, Terminator};
+use crate::ir::{Expr, Identifier, Parameter, Statement, Terminator, resolve};
 use crate::ir::{Function, Program};
 use anyhow::Result;
 pub use errors::ShapeError;
-type AnalysisDomain = HashMap<Path, HashSet<Variable>>;
+type AnalysisDomain = HashMap<Identifier, HashSet<Variable>>;
 
 pub use print::{ir_with_inferred_shapes_to_string, print_ir_with_inferred_shapes};
 
@@ -42,7 +42,7 @@ impl JoinSemiLattice for AnalysisDomain {
 
 #[derive(Debug)]
 pub struct GlobalAnalysis {
-    pub functions: HashMap<Path, FunctionAnalysis>,
+    pub functions: HashMap<Identifier, FunctionAnalysis>,
     pub models: Arc<ModelContext>,
 }
 
@@ -86,18 +86,24 @@ impl GlobalAnalysis {
                     if let Some(target) = &stmt.target
                         && let Some(position) = stmt.assign_end
                     {
-                        let vars = func_analysis.state.get(loc).unwrap().get(target).unwrap();
-                        if let Some(label) = vars_to_inlay(vars) {
-                            hints.push(InlayHint {
-                                position,
-                                label: tower_lsp::lsp_types::InlayHintLabel::String(label),
-                                kind: None,
-                                text_edits: None,
-                                tooltip: None,
-                                padding_left: None,
-                                padding_right: None,
-                                data: None,
-                            });
+                        // Only show hints for Ident targets
+                        if let ExprKind::Ident(name) = &target.kind {
+                            if let Some(vars) =
+                                func_analysis.state.get(loc).and_then(|d| d.get(name))
+                            {
+                                if let Some(label) = vars_to_inlay(vars) {
+                                    hints.push(InlayHint {
+                                        position,
+                                        label: tower_lsp::lsp_types::InlayHintLabel::String(label),
+                                        kind: None,
+                                        text_edits: None,
+                                        tooltip: None,
+                                        padding_left: None,
+                                        padding_right: None,
+                                        data: None,
+                                    });
+                                }
+                            }
                         }
                     }
                 }
@@ -112,7 +118,7 @@ impl GlobalAnalysis {
 pub struct FunctionAnalysis {
     // TODO: currently just using Hash{Set,Map}s, but would benefit perhaps
     // from using bitsets, if the speedup is worth it
-    pub id: Path,
+    pub id: Identifier,
     pub state: HashMap<Location, AnalysisDomain>,
     pub models: Arc<ModelContext>,
     pub function: Function,
@@ -125,9 +131,9 @@ impl FunctionAnalysis {
 
         let mut start_domain = AnalysisDomain::new();
 
-        for Parameter(path, var) in &func.params {
+        for Parameter(ident, var) in &func.params {
             if let Some(var) = var {
-                start_domain.insert(path.clone(), HashSet::from([var.clone()]));
+                start_domain.insert(ident.clone(), HashSet::from([var.clone()]));
             }
         }
         state.insert(Location::START, start_domain);
@@ -156,7 +162,7 @@ impl FunctionAnalysis {
                 keyword_args,
             } => self.eval_call(domain, function, pos_args, keyword_args, expr.span),
             ExprKind::Constant(c) => self.eval_constant(c),
-            ExprKind::Ident(name) => self.eval_ident(domain, expr),
+            ExprKind::Ident(_name) => self.eval_ident(domain, expr),
             ExprKind::Attribute { value, attr } => self.eval_attribute(domain, value, attr, expr),
             ExprKind::Index { receiver, index } => {
                 self.eval_index(domain, receiver, index, expr.span)
@@ -237,10 +243,14 @@ impl FunctionAnalysis {
 
     /// Lookup identifier
     fn eval_ident(&self, domain: &AnalysisDomain, expr: &Expr) -> Result<HashSet<Variable>> {
-        Ok(domain
-            .get(expr)
-            .unwrap_or(&HashSet::from([Variable::Top]))
-            .clone())
+        if let ExprKind::Ident(name) = &expr.kind {
+            Ok(domain
+                .get(name)
+                .unwrap_or(&HashSet::from([Variable::Top]))
+                .clone())
+        } else {
+            Ok(HashSet::from([Variable::Top]))
+        }
     }
 
     /// Attribute lookup
@@ -248,19 +258,16 @@ impl FunctionAnalysis {
         &mut self,
         domain: &AnalysisDomain,
         value: &Expr,
-        attr: &str,
-        expr: &Expr,
+        attr: &Identifier,
+        _expr: &Expr,
     ) -> Result<HashSet<Variable>> {
         // Special case for .shape attribute
-        if attr == "shape" {
+        if resolve(*attr) == "shape" {
             return self.eval_shape_attribute(domain, value);
         }
 
-        // Fallback: treat as path lookup
-        Ok(domain
-            .get(expr)
-            .unwrap_or(&HashSet::from([Variable::Top]))
-            .clone())
+        // For now, we're not doing true heap modelling so we can't resolve attributes
+        Ok(HashSet::from([Variable::Top]))
     }
 
     /// Special case .shape attribute
@@ -269,7 +276,14 @@ impl FunctionAnalysis {
         domain: &AnalysisDomain,
         value: &Expr,
     ) -> Result<HashSet<Variable>> {
-        match domain.get(value) {
+        // Try to get the identifier from the value expression
+        let vars = if let ExprKind::Ident(name) = &value.kind {
+            domain.get(name)
+        } else {
+            None
+        };
+
+        match vars {
             Some(vars) => {
                 let shape_dims: Vec<_> = vars.iter().filter_map(|v| v.as_shape_dims()).collect();
                 let tuples = shape_dims
@@ -303,15 +317,15 @@ impl FunctionAnalysis {
         domain: &AnalysisDomain,
         function: &Expr,
         pos_args: &[Expr],
-        keyword_args: &[(String, Expr)],
+        keyword_args: &[(Identifier, Expr)],
         span: SourceSpan,
     ) -> Result<HashSet<Variable>> {
         let args_sets = self.eval_call_args(domain, pos_args)?;
         let kwargs_sets = self.eval_call_kwargs(domain, keyword_args)?;
 
         let args_products = args_sets.iter().multi_cartesian_product();
-        let kw_names = kwargs_sets.iter().map(|(n, _)| n.clone());
-        let kwargs_products: Vec<HashMap<_, _>> = kwargs_sets
+        let kw_names = kwargs_sets.iter().map(|(n, _)| *n);
+        let kwargs_products: Vec<HashMap<Identifier, _>> = kwargs_sets
             .iter()
             .map(|(_, vars)| vars)
             .multi_cartesian_product()
@@ -359,20 +373,20 @@ impl FunctionAnalysis {
     fn eval_call_kwargs(
         &mut self,
         domain: &AnalysisDomain,
-        kwargs: &[(String, Expr)],
-    ) -> Result<Vec<(String, HashSet<Variable>)>> {
+        kwargs: &[(Identifier, Expr)],
+    ) -> Result<Vec<(Identifier, HashSet<Variable>)>> {
         kwargs
             .iter()
-            .map(|(n, arg_expr)| Ok((n.clone(), self.eval_expr(domain, arg_expr)?)))
+            .map(|(n, arg_expr)| Ok((*n, self.eval_expr(domain, arg_expr)?)))
             .collect()
     }
 
     /// Convert an Expr to a dot-separated string (e.g., "torch.nn.functional.relu")
     fn expr_to_dot_string(&self, expr: &Expr) -> String {
         match &expr.kind {
-            ExprKind::Ident(name) => name.clone(),
+            ExprKind::Ident(name) => resolve(*name),
             ExprKind::Attribute { value, attr } => {
-                format!("{}.{}", self.expr_to_dot_string(value), attr)
+                format!("{}.{}", self.expr_to_dot_string(value), resolve(*attr))
             }
             _ => String::new(),
         }
@@ -384,7 +398,7 @@ impl FunctionAnalysis {
         domain: &AnalysisDomain,
         receiver: &Expr,
         index: &[Either<Expr, Slice>],
-        span: SourceSpan,
+        _span: SourceSpan,
     ) -> Result<HashSet<Variable>> {
         let vars = self.eval_expr(domain, receiver)?;
         let indices = self.eval_indices(domain, index)?;
@@ -583,9 +597,15 @@ impl FunctionAnalysis {
     /// Eval expr, updating target if this statement is an assignment.
     fn handle_stmt(&mut self, domain: &mut AnalysisDomain, stmt: &Statement) -> Result<()> {
         let res_var = self.eval_expr(domain, &stmt.value)?;
-        if let Some(path) = &stmt.target {
-            domain.insert(path.clone(), res_var);
+
+        if let Some(target) = &stmt.target {
+            // For now, only handle the case where target is an Ident
+            if let ExprKind::Ident(name) = &target.kind {
+                domain.insert(name.clone(), res_var);
+            }
+            // Ignore Attribute and other cases for now
         }
+
         Ok(())
     }
 
@@ -646,3 +666,7 @@ pub fn analyze(prog: Program) -> Result<GlobalAnalysis> {
     }
     Ok(global_analysis)
 }
+
+// Before: path -> Variable
+// Now: Ident -> Either<Variable, HeapIndex>
+// when we see a list, dict, or class, we'll create a heap object and map the local to the corresponding HeapIndex

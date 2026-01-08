@@ -8,8 +8,8 @@ use crate::{
         dimvars::{CanonicalDimVar, DimVar, NamedPow, Term},
     },
     ir::{
-        Function,
-        types::{Location, Path},
+        Function, resolve,
+        types::{ExprKind, Location},
     },
     utils::{indent, write_comma_separated},
 };
@@ -44,7 +44,7 @@ impl fmt::Display for Shape {
 
 impl fmt::Display for FunctionAnalysis {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Function {}\n", self.id)?;
+        write!(f, "Function {}\n", resolve(self.id))?;
         for (loc, domain) in self
             .state
             .iter()
@@ -52,7 +52,7 @@ impl fmt::Display for FunctionAnalysis {
         {
             write!(f, "  {}\n", loc)?;
             for (path, vars) in domain.iter() {
-                write!(f, "    {} => {{", path)?;
+                write!(f, "    {} => {{", resolve(*path))?;
                 write_comma_separated(f, vars)?;
                 write!(f, "}}\n")?
             }
@@ -129,7 +129,7 @@ impl fmt::Display for NamedPow {
 }
 
 #[allow(dead_code)]
-fn format_annotation(domain: &AnalysisDomain, target: &Path) -> String {
+fn format_annotation(domain: &AnalysisDomain, target: &crate::ir::Identifier) -> String {
     if let Some(vars) = domain.get(target) {
         let vars = vars.iter().map(|v| format!("{}", v)).join(", ");
         "{".to_owned() + &vars + "}"
@@ -146,7 +146,7 @@ pub fn ir_with_inferred_shapes_to_string(
 ) -> String {
     let mut output = String::new();
 
-    write!(output, "def {}(", ir.identifier).unwrap();
+    write!(output, "def {}(", resolve(ir.identifier)).unwrap();
     for (i, param) in ir.params.iter().enumerate() {
         if i > 0 {
             output.push_str(", ");
@@ -185,7 +185,12 @@ pub fn ir_with_inferred_shapes_to_string(
             };
 
             let annotated_stmt = if let Some(target) = &stmt.target {
-                let annotation = format_annotation(domain, target);
+                // Only show annotation for Ident targets
+                let annotation = if let ExprKind::Ident(name) = &target.kind {
+                    format_annotation(domain, name)
+                } else {
+                    "{}".to_owned()
+                };
                 format!("{}: {} = {}", target, annotation, stmt.value)
             } else {
                 format!("{}", stmt.value)

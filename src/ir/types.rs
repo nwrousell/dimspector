@@ -8,6 +8,8 @@ use petgraph::{
     graph::{DiGraph, NodeIndex},
 };
 use smallvec::{SmallVec, smallvec};
+use std::sync::{LazyLock, Mutex};
+use string_interner::{DefaultSymbol, StringInterner, backend::StringBackend};
 
 use ruff_python_ast::{CmpOp, Operator};
 use ruff_text_size::TextRange;
@@ -16,9 +18,33 @@ use tower_lsp::lsp_types::Position;
 
 use crate::analysis::Variable;
 
+/// Interned string type for identifiers
+pub type Identifier = DefaultSymbol;
+
+/// Global string interner for identifiers
+static INTERNER: LazyLock<Mutex<StringInterner<StringBackend<DefaultSymbol>>>> =
+    LazyLock::new(|| Mutex::new(StringInterner::default()));
+
+/// Intern a string and return its symbol
+pub fn intern(s: &str) -> Identifier {
+    INTERNER.lock().unwrap().get_or_intern(s)
+}
+
+/// Resolve a symbol back to its string
+pub fn resolve(sym: Identifier) -> String {
+    INTERNER.lock().unwrap().resolve(sym).unwrap().to_string()
+}
+
 #[derive(Clone, Debug)]
 pub struct Program {
     pub functions: Vec<Function>,
+    pub classes: Vec<Class>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Class {
+    pub identifier: Identifier,
+    pub methods: HashMap<Identifier, Function>,
 }
 
 pub type Cfg = DiGraph<BasicBlock, ()>;
@@ -54,7 +80,7 @@ impl Location {
 
 #[derive(Clone, Debug)]
 pub struct Function {
-    pub identifier: String,
+    pub identifier: Identifier,
     pub cfg: Cfg,
     pub params: Vec<Parameter>,
     pub returns: Option<Vec<Variable>>,
@@ -63,19 +89,19 @@ pub struct Function {
 }
 
 #[derive(Clone, Debug)]
-pub struct Parameter(pub String, pub Option<Variable>);
+pub struct Parameter(pub Identifier, pub Option<Variable>);
 
 impl Parameter {
-    pub fn new(param: String, annotation: Option<Variable>) -> Self {
+    pub fn new(param: Identifier, annotation: Option<Variable>) -> Self {
         Self(param, annotation)
     }
 }
 
 impl Function {
     pub fn new(
-        identifier: String,
+        identifier: Identifier,
         cfg: Cfg,
-        params: Vec<(String, Option<Variable>)>,
+        params: Vec<(Identifier, Option<Variable>)>,
         returns: Option<Vec<Variable>>,
     ) -> Function {
         let rpo: Vec<BasicBlockIdx> = utils::reverse_post_order(&cfg, 0.into())
@@ -267,7 +293,7 @@ impl Expr {
         }
     }
 
-    pub fn ident(name: String, range: TextRange, ty: Type) -> Expr {
+    pub fn ident(name: Identifier, range: TextRange, ty: Type) -> Expr {
         Expr {
             kind: ExprKind::Ident(name),
             ty,
@@ -275,7 +301,7 @@ impl Expr {
         }
     }
 
-    pub fn attribute(value: Expr, attr: String, range: TextRange, ty: Type) -> Expr {
+    pub fn attribute(value: Expr, attr: Identifier, range: TextRange, ty: Type) -> Expr {
         Expr {
             kind: ExprKind::Attribute {
                 value: Box::new(value),
@@ -289,7 +315,7 @@ impl Expr {
     pub fn call(
         function: Expr,
         pos_args: Vec<Expr>,
-        keyword_args: Vec<(String, Expr)>,
+        keyword_args: Vec<(Identifier, Expr)>,
         range: TextRange,
         ty: Type,
     ) -> Expr {
@@ -475,10 +501,10 @@ impl Type {
 
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub enum ExprKind {
-    Ident(String),
+    Ident(Identifier),
     Attribute {
         value: Box<Expr>,
-        attr: String,
+        attr: Identifier,
     },
     Binop {
         left: Box<Expr>,
@@ -488,7 +514,7 @@ pub enum ExprKind {
     Call {
         function: Box<Expr>,
         pos_args: Vec<Expr>,
-        keyword_args: Vec<(String, Expr)>,
+        keyword_args: Vec<(Identifier, Expr)>,
     },
     Constant(Constant),
     Tuple(Vec<Expr>),

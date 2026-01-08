@@ -8,7 +8,7 @@ use ty_python_semantic::SemanticModel;
 
 pub struct ParsedFile {
     pub db: ProjectDatabase,
-    pub semantic_model: Box<SemanticModel<'static>>,
+    pub file: ruff_db::files::File,
     pub functions: Vec<StmtFunctionDef>,
     pub classes: Vec<StmtClassDef>,
 }
@@ -23,7 +23,6 @@ pub fn parse_file(path: &Path) -> Result<ParsedFile> {
     let db = ProjectDatabase::new(project_metadata, system)?;
 
     let file = system_path_to_file(&db, &file_path)?;
-    let semantic_model = SemanticModel::new(&db, file);
 
     let parsed = parsed_module(&db, file).load(&db);
     let mut functions = Vec::new();
@@ -38,14 +37,9 @@ pub fn parse_file(path: &Path) -> Result<ParsedFile> {
         }
     }
 
-    // Box the semantic_model to avoid lifetime issues
-    // This is safe because ProjectDatabase and SemanticModel are designed to work together
-    let semantic_model =
-        unsafe { std::mem::transmute::<SemanticModel<'_>, SemanticModel<'static>>(semantic_model) };
-
     Ok(ParsedFile {
         db,
-        semantic_model: Box::new(semantic_model),
+        file,
         functions,
         classes,
     })
