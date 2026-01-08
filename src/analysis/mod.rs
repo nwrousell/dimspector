@@ -16,13 +16,16 @@ pub use crate::analysis::dimvars::{DimKind, DimVar};
 use crate::analysis::models::{Model, ModelContext};
 use crate::analysis::types::DimSlice;
 use crate::ir::types::{Binop, Constant, ExprKind, Location, Slice};
-use crate::ir::{Expr, Identifier, Parameter, Statement, Terminator, resolve};
-use crate::ir::{Function, Program};
+use crate::ir::{Class, Function, Program};
+use crate::ir::{Expr, Identifier, Parameter, Statement, Terminator, intern, resolve};
 use anyhow::Result;
 pub use errors::ShapeError;
 type AnalysisDomain = HashMap<Identifier, HashSet<Variable>>;
 
-pub use print::{ir_with_inferred_shapes_to_string, print_ir_with_inferred_shapes};
+pub use print::{
+    class_with_inferred_shapes_to_string, function_with_inferred_shapes_to_string,
+    print_class_with_inferred_shapes, print_function_with_inferred_shapes,
+};
 
 pub trait JoinSemiLattice: Eq {
     fn join(&mut self, other: &Self);
@@ -43,6 +46,7 @@ impl JoinSemiLattice for AnalysisDomain {
 #[derive(Debug)]
 pub struct GlobalAnalysis {
     pub functions: HashMap<Identifier, FunctionAnalysis>,
+    pub classes: HashMap<Identifier, ClassAnalysis>,
     pub models: Arc<ModelContext>,
 }
 
@@ -63,16 +67,55 @@ impl GlobalAnalysis {
     pub fn new(funcs: &Vec<Function>) -> Self {
         Self {
             functions: HashMap::new(),
+            classes: HashMap::new(),
             models: Arc::new(ModelContext::new(funcs)),
         }
     }
 
     pub fn analyze_func(&mut self, func: &Function) -> Result<()> {
         let name = func.identifier.clone();
-        let mut func_analysis = FunctionAnalysis::new(func, Arc::clone(&self.models));
+        let mut func_analysis = FunctionAnalysis::new(func, Arc::clone(&self.models), None);
         func_analysis.analyze_func(func)?;
         self.functions.insert(name, func_analysis);
         Ok(())
+    }
+
+    pub fn analyze_class(&mut self, class: &Class) -> Result<()> {
+        let name = class.identifier.clone();
+        let class_analysis = analyze_class(class, Arc::clone(&self.models))?;
+        self.classes.insert(name, class_analysis);
+        Ok(())
+    }
+
+    /// Format the entire analysis result as a string, including both classes and functions.
+    pub fn format_all(&self, prog: &Program) -> String {
+        let mut output = String::new();
+
+        // Print classes first
+        for (name, facts) in self
+            .classes
+            .iter()
+            .sorted_by(|(a, _), (b, _)| resolve(**a).cmp(&resolve(**b)))
+        {
+            if let Some(class) = prog.classes.iter().find(|c| c.identifier == *name) {
+                output.push_str(&class_with_inferred_shapes_to_string(class, facts, None));
+                output.push_str("\n\n");
+            }
+        }
+
+        // Then print functions
+        for (name, facts) in self
+            .functions
+            .iter()
+            .sorted_by(|(a, _), (b, _)| resolve(**a).cmp(&resolve(**b)))
+        {
+            if let Some(func) = prog.functions.iter().find(|f| f.identifier == *name) {
+                output.push_str(&function_with_inferred_shapes_to_string(func, facts, None));
+                output.push_str("\n\n");
+            }
+        }
+
+        output
     }
 
     pub fn inlay_hints(&self) -> Vec<InlayHint> {
@@ -125,17 +168,32 @@ pub struct FunctionAnalysis {
 }
 
 impl FunctionAnalysis {
-    fn new(func: &Function, models: Arc<ModelContext>) -> Self {
-        // populate state with initial params
+    /// Create a new FunctionAnalysis.
+    ///
+    /// If `class_attributes` is `Some`, this is a method analysis and the state will include
+    /// both the class attributes (self.X) and function parameters.
+    /// If `class_attributes` is `None`, this is a top-level function and only params will be used.
+    fn new(
+        func: &Function,
+        models: Arc<ModelContext>,
+        class_attributes: Option<AnalysisDomain>,
+    ) -> Self {
         let mut state = HashMap::new();
 
         let mut start_domain = AnalysisDomain::new();
 
+        // populate with params
         for Parameter(ident, var) in &func.params {
             if let Some(var) = var {
                 start_domain.insert(ident.clone(), HashSet::from([var.clone()]));
             }
         }
+
+        // If this is a method, also include class attributes (self.X)
+        if let Some(class_attrs) = class_attributes {
+            start_domain.extend(class_attrs);
+        }
+
         state.insert(Location::START, start_domain);
 
         Self {
@@ -264,6 +322,19 @@ impl FunctionAnalysis {
         // Special case for .shape attribute
         if resolve(*attr) == "shape" {
             return self.eval_shape_attribute(domain, value);
+        }
+
+        // Handle self.foo case for methods
+        // Check if value is "self" identifier
+        if let ExprKind::Ident(self_ident) = &value.kind {
+            if resolve(*self_ident) == "self" {
+                // This is a method (determined by presence of self.X in domain)
+                // Look up "self.foo" in the domain
+                let self_attr_name = intern(&format!("self.{}", resolve(*attr)));
+                if let Some(vars) = domain.get(&self_attr_name) {
+                    return Ok(vars.clone());
+                }
+            }
         }
 
         // For now, we're not doing true heap modelling so we can't resolve attributes
@@ -599,11 +670,25 @@ impl FunctionAnalysis {
         let res_var = self.eval_expr(domain, &stmt.value)?;
 
         if let Some(target) = &stmt.target {
-            // For now, only handle the case where target is an Ident
-            if let ExprKind::Ident(name) = &target.kind {
-                domain.insert(name.clone(), res_var);
+            match &target.kind {
+                ExprKind::Ident(name) => {
+                    domain.insert(name.clone(), res_var);
+                }
+                ExprKind::Attribute { value, attr } => {
+                    // Handle self.X assignments for methods
+                    if let ExprKind::Ident(self_ident) = &value.kind {
+                        if resolve(*self_ident) == "self" {
+                            // Store as "self.X" in domain
+                            let self_attr_name = intern(&format!("self.{}", resolve(*attr)));
+                            domain.insert(self_attr_name, res_var);
+                        }
+                    }
+                    // Ignore other attribute assignments for now
+                }
+                _ => {
+                    // Ignore other cases for now
+                }
             }
-            // Ignore Attribute and other cases for now
         }
 
         Ok(())
@@ -648,7 +733,7 @@ impl FunctionAnalysis {
             if let Err(e) = result {
                 eprintln!(
                     "{}",
-                    print::ir_with_inferred_shapes_to_string(func, self, Some(*loc))
+                    print::function_with_inferred_shapes_to_string(func, self, Some(*loc))
                 );
                 return Err(e);
             }
@@ -658,15 +743,101 @@ impl FunctionAnalysis {
     }
 }
 
+#[derive(Debug)]
+pub struct ClassAnalysis {
+    /// The identifier of the class being analyzed
+    pub id: Identifier,
+    /// Mapping from attribute names (like "fc1", "fc2") to their inferred Variables.
+    /// The Variables' dimvars are in terms of the annotated dimvars of the __init__ method.
+    pub attributes: HashMap<Identifier, HashSet<Variable>>,
+    /// Analysis results for each method (excluding __init__).
+    /// These are used for consistency checking.
+    pub methods: HashMap<Identifier, FunctionAnalysis>,
+}
+
+/// Analyze a class to infer tensor shapes for its attributes and methods.
+///
+/// This function:
+/// 1. Analyzes the `__init__` method as a special case to extract attribute shapes
+/// 2. Analyzes other methods for consistency checking
+pub fn analyze_class(class: &Class, models: Arc<ModelContext>) -> Result<ClassAnalysis> {
+    let init_method_name = intern("__init__");
+
+    // Find the __init__ method
+    let init_method = class.methods.get(&init_method_name).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Class {} missing __init__ method",
+            resolve(class.identifier)
+        )
+    })?;
+    // TODO: Handle superclass inheritance - if __init__ is missing, check parent classes
+
+    // Analyze __init__ method to extract attribute shapes
+    let mut init_analysis = FunctionAnalysis::new(init_method, Arc::clone(&models), None);
+    init_analysis.analyze_func(init_method)?;
+
+    // Extract self.X assignments from final locations only
+    // We look at final locations (Return terminators) and collect any "self.X" entries
+    let mut attributes: HashMap<Identifier, HashSet<Variable>> = HashMap::new();
+    let final_locs = init_method.final_locations();
+    for final_loc in &final_locs {
+        if let Some(domain) = init_analysis.state.get(final_loc) {
+            for (ident, vars) in domain {
+                let ident_str = resolve(*ident);
+                if ident_str.starts_with("self.") {
+                    // Extract attribute name (everything after "self.")
+                    let attr_name = &ident_str[5..]; // "self.".len() == 5
+                    let attr_ident = intern(attr_name);
+                    // Use the first occurrence or join with existing
+                    if let Some(existing_vars) = attributes.get_mut(&attr_ident) {
+                        existing_vars.extend(vars.iter().cloned());
+                    } else {
+                        attributes.insert(attr_ident, vars.clone());
+                    }
+                }
+            }
+        } else {
+            unreachable!("FunctionAnalysis didn't add domain at final location");
+        }
+    }
+
+    // Build initial state for other methods with self.X attributes
+    let mut method_class_attributes = AnalysisDomain::new();
+    for (attr_ident, vars) in &attributes {
+        let self_attr_name = intern(&format!("self.{}", resolve(*attr_ident)));
+        method_class_attributes.insert(self_attr_name, vars.clone());
+    }
+
+    // Check other methods
+    let mut methods = HashMap::new();
+    for (method_name, method_func) in &class.methods {
+        if *method_name == init_method_name {
+            continue;
+        }
+
+        let mut method_analysis = FunctionAnalysis::new(
+            method_func,
+            Arc::clone(&models),
+            Some(method_class_attributes.clone()),
+        );
+        method_analysis.analyze_func(method_func)?;
+        methods.insert(*method_name, method_analysis);
+    }
+
+    Ok(ClassAnalysis {
+        id: class.identifier,
+        attributes,
+        methods,
+    })
+}
+
 pub fn analyze(prog: Program) -> Result<GlobalAnalysis> {
     let mut global_analysis = GlobalAnalysis::new(&prog.functions);
+    for class in prog.classes {
+        global_analysis.analyze_class(&class)?;
+    }
     for func in prog.functions {
-        // TODO: maybe do some nice caching later for modularity with user's own funcs
         global_analysis.analyze_func(&func)?;
     }
     Ok(global_analysis)
 }
-
-// Before: path -> Variable
-// Now: Ident -> Either<Variable, HeapIndex>
-// when we see a list, dict, or class, we'll create a heap object and map the local to the corresponding HeapIndex

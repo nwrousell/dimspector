@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use dimspector::{
-    analysis::{ShapeError, analyze, print_ir_with_inferred_shapes},
+    analysis::{ShapeError, analyze},
     ir, lsp,
     parse::parse_file,
 };
@@ -78,11 +78,7 @@ fn check(file: PathBuf) -> anyhow::Result<()> {
         }
     };
 
-    for (name, facts) in &res.functions {
-        let func = ir.functions.iter().find(|f| f.identifier == *name).unwrap();
-        print_ir_with_inferred_shapes(func, facts, None);
-        println!("\n")
-    }
+    print!("{}", res.format_all(&ir));
 
     Ok(())
 }

@@ -1,11 +1,7 @@
 use std::path::Path;
 
 use anyhow::Result;
-use dimspector::{
-    analysis::{self, ir_with_inferred_shapes_to_string},
-    ir,
-    parse::parse_file,
-};
+use dimspector::{analysis, ir, parse::parse_file};
 use walkdir::WalkDir;
 
 fn run_snapshot_test<F>(suffix: &str, process: F) -> Result<()>
@@ -60,16 +56,7 @@ fn analyze(path: &Path) -> Result<String> {
         let ir = ir::lower(&parsed)?;
 
         match analysis::analyze(ir.clone()) {
-            Ok(res) => {
-                let mut output = String::new();
-                for (name, facts) in &res.functions {
-                    if let Some(func) = ir.functions.iter().find(|f| f.identifier == *name) {
-                        output.push_str(&ir_with_inferred_shapes_to_string(func, facts, None));
-                        output.push('\n');
-                    }
-                }
-                Ok(output)
-            }
+            Ok(res) => Ok(res.format_all(&ir)),
             Err(err) => Ok(format!("analysis error: {err:?}")),
         }
     };

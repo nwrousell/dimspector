@@ -4,11 +4,11 @@ use itertools::Itertools;
 
 use crate::{
     analysis::{
-        AnalysisDomain, FunctionAnalysis, GlobalAnalysis,
+        AnalysisDomain, ClassAnalysis, FunctionAnalysis, GlobalAnalysis,
         dimvars::{CanonicalDimVar, DimVar, NamedPow, Term},
     },
     ir::{
-        Function, resolve,
+        Class, Function, resolve,
         types::{ExprKind, Location},
     },
     utils::{indent, write_comma_separated},
@@ -139,7 +139,7 @@ fn format_annotation(domain: &AnalysisDomain, target: &crate::ir::Identifier) ->
 }
 
 #[allow(dead_code)]
-pub fn ir_with_inferred_shapes_to_string(
+pub fn function_with_inferred_shapes_to_string(
     ir: &Function,
     func_facts: &FunctionAnalysis,
     stop_at: Option<Location>,
@@ -222,13 +222,78 @@ pub fn ir_with_inferred_shapes_to_string(
 }
 
 #[allow(dead_code)]
-pub fn print_ir_with_inferred_shapes(
+pub fn print_function_with_inferred_shapes(
     ir: &Function,
     func_facts: &FunctionAnalysis,
     stop_at: Option<Location>,
 ) {
     print!(
         "{}",
-        ir_with_inferred_shapes_to_string(ir, func_facts, stop_at)
+        function_with_inferred_shapes_to_string(ir, func_facts, stop_at)
+    );
+}
+
+#[allow(dead_code)]
+pub fn class_with_inferred_shapes_to_string(
+    class: &Class,
+    class_facts: &ClassAnalysis,
+    stop_at: Option<Location>,
+) -> String {
+    let mut output = String::new();
+
+    write!(output, "class {}:\n", resolve(class.identifier)).unwrap();
+
+    // Print inferred attributes as class variable annotations
+    if !class_facts.attributes.is_empty() {
+        for (attr_ident, vars) in class_facts
+            .attributes
+            .iter()
+            .sorted_by(|(a, _), (b, _)| resolve(**a).cmp(&resolve(**b)))
+        {
+            let vars_str = vars.iter().map(|v| format!("{}", v)).join(", ");
+            write!(output, "    {}: {{{}}}\n", resolve(*attr_ident), vars_str).unwrap();
+        }
+        output.push_str("\n");
+    }
+
+    // Print methods
+    if !class.methods.is_empty() {
+        let mut first = true;
+        for (method_name, method_func) in class
+            .methods
+            .iter()
+            .sorted_by(|(a, _), (b, _)| resolve(**a).cmp(&resolve(**b)))
+        {
+            if !first {
+                output.push_str("\n");
+            }
+            first = false;
+
+            // Get method analysis if available
+            if let Some(method_analysis) = class_facts.methods.get(method_name) {
+                let method_output =
+                    function_with_inferred_shapes_to_string(method_func, method_analysis, stop_at);
+                // Indent the method content
+                output.push_str(&indent(&method_output));
+            } else {
+                // Fallback to basic method printing if no analysis available
+                let method_content = format!("{}", method_func);
+                output.push_str(&indent(&method_content));
+            }
+        }
+    }
+
+    output
+}
+
+#[allow(dead_code)]
+pub fn print_class_with_inferred_shapes(
+    class: &Class,
+    class_facts: &ClassAnalysis,
+    stop_at: Option<Location>,
+) {
+    print!(
+        "{}",
+        class_with_inferred_shapes_to_string(class, class_facts, stop_at)
     );
 }

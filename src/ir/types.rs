@@ -164,6 +164,23 @@ impl Function {
     pub fn instr(&self, loc: &Location) -> Either<&Statement, &Terminator> {
         self.data(loc.block).get(loc.instr)
     }
+
+    /// Returns all final locations in the function (locations at Return terminators).
+    /// These are the locations where the function terminates, including implicit returns.
+    pub fn final_locations(&self) -> Vec<Location> {
+        let mut final_locs = Vec::new();
+        for block_idx in self.blocks() {
+            let block = self.data(block_idx);
+            if matches!(block.terminator, Terminator::Return(_)) {
+                // The final location is at the terminator position (after all statements)
+                final_locs.push(Location {
+                    block: block_idx,
+                    instr: block.statements.len(),
+                });
+            }
+        }
+        final_locs
+    }
 }
 
 pub struct Annotation;
