@@ -346,6 +346,21 @@ impl PartialEq for DimVar {
 
 impl Eq for DimVar {}
 
+impl PartialOrd for DimVar {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for DimVar {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // Compare using canonical form
+        let self_canonical = self.canonical();
+        let other_canonical = other.canonical();
+        self_canonical.0.cmp(&other_canonical.0)
+    }
+}
+
 #[derive(Debug, Clone, Hash)]
 pub struct DimVar {
     pub kind: DimKind,

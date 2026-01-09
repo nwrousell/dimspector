@@ -743,12 +743,12 @@ impl Model for TransposeModel {
     }
 }
 
-#[derive(Debug)]
-struct SignatureModel {
-    params: Vec<Parameter>,
+#[derive(Debug, Clone)]
+pub struct SignatureModel {
+    pub params: Vec<Parameter>,
     // TODO: in the future with the possibility of mutations,
     // doesn't necc need to have return annotation
-    returns: Option<Vec<Variable>>,
+    pub returns: Option<Vec<Variable>>,
 }
 
 impl SignatureModel {

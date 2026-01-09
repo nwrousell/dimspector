@@ -112,6 +112,8 @@ struct LowerBody<'db> {
     pub model: &'db SemanticModel<'db>,
     /// Set of class identifiers for callable type inference heuristic
     pub class_names: &'db std::collections::HashSet<Identifier>,
+    /// Mapping from instance identifiers to their class identifiers
+    pub instance_identifiers: std::collections::HashMap<Identifier, Identifier>,
 }
 
 impl<'db> LowerBody<'db> {
@@ -174,6 +176,7 @@ impl<'db> LowerBody<'db> {
             _db: db,
             model,
             class_names,
+            instance_identifiers: std::collections::HashMap::new(),
         }
     }
 
@@ -215,32 +218,24 @@ impl<'db> LowerBody<'db> {
         None
     }
 
-    /// Infer the callable type of an AST expression using some hacky heuristics
-    fn infer_callable_type(&self, expr: &ASTExpr) -> Type {
-        Self::infer_callable_type_heuristic(expr, self.class_names)
-    }
-
     /// Infer callable type by heuristic: if it's in the list of class names, it's a constructor.
-    /// If it's an attribute off of a class, it's a method, else default to function.
-    fn infer_callable_type_heuristic(
-        expr: &ASTExpr,
-        class_names: &std::collections::HashSet<Identifier>,
-    ) -> Type {
+    /// If it's an attribute off of an instance identifier, it's a method, else default to function.
+    fn infer_callable_type(&self, expr: &ASTExpr) -> Type {
         match expr {
             ASTExpr::Name(ExprName { id, .. }) => {
                 let name = intern(id.as_str());
-                if class_names.contains(&name) {
+                if self.class_names.contains(&name) {
                     Type::Constructor(name)
                 } else {
                     Type::Function
                 }
             }
             ASTExpr::Attribute(ExprAttribute { value, attr, .. }) => {
-                // Check if the value is a class name - if so, this is a method
+                // Check if the value is an instance identifier (assigned from constructor)
                 if let ASTExpr::Name(ExprName { id, .. }) = value.as_ref() {
-                    let class_name = intern(id.as_str());
-                    if class_names.contains(&class_name) {
-                        return Type::Method(class_name);
+                    let receiver_id = intern(id.as_str());
+                    if let Some(class_id) = self.instance_identifiers.get(&receiver_id) {
+                        return Type::Method(*class_id);
                     }
                 }
                 // Otherwise, it's a function call on some other object
@@ -352,7 +347,22 @@ impl<'db> LowerBody<'db> {
                         ASTExpr::Subscript(ExprSubscript { range, .. }) => *range,
                         _ => range,
                     };
-                    let target_expr = self.lower_expr(target)?;
+                    let target_expr = self.lower_expr(target.clone())?;
+
+                    // Check if the value is a constructor call - if so, track the target identifier
+                    if let ASTExpr::Call(ExprCall { func, .. }) = &value {
+                        if let ASTExpr::Name(ExprName { id, .. }) = func.as_ref() {
+                            let func_name = intern(id.as_str());
+                            if self.class_names.contains(&func_name) {
+                                // This is a constructor call - track the target identifier
+                                if let ASTExpr::Name(ExprName { id: target_id, .. }) = &target {
+                                    let target_ident = intern(target_id.as_str());
+                                    self.instance_identifiers.insert(target_ident, func_name);
+                                }
+                            }
+                        }
+                    }
+
                     let value = self.lower_expr(value)?;
                     let assign_end_byte = target_range.end().to_usize();
                     let assign_end = Some(tower_lsp::lsp_types::Position::new(
@@ -375,7 +385,6 @@ impl<'db> LowerBody<'db> {
                     ASTExpr::Subscript(ExprSubscript { range, .. }) => *range,
                     _ => range,
                 };
-                let target_ty = self.infer_callable_type(&target);
                 let target_expr = self.lower_expr(*target.clone())?;
                 let value = self.lower_expr(*value)?;
                 let range_converted = range;
@@ -384,7 +393,7 @@ impl<'db> LowerBody<'db> {
                     value.clone(),
                     op.into(),
                     range_converted,
-                    target_ty,
+                    Type::Other,
                 );
                 let assign_end_byte = target_range.end().to_usize();
                 let assign_end = Some(tower_lsp::lsp_types::Position::new(

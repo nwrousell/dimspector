@@ -4,7 +4,7 @@ mod models;
 mod print;
 mod types;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use itertools::{Either, Itertools};
@@ -13,9 +13,9 @@ use tower_lsp::lsp_types::InlayHint;
 pub use types::{Shape, Variable};
 
 pub use crate::analysis::dimvars::{DimKind, DimVar};
-use crate::analysis::models::{Model, ModelContext};
-use crate::analysis::types::DimSlice;
-use crate::ir::types::{Binop, Constant, ExprKind, Location, Slice};
+use crate::analysis::models::{Model, ModelContext, SignatureModel};
+use crate::analysis::types::{ClassInstance, DimSlice};
+use crate::ir::types::{Binop, Constant, ExprKind, Location, Slice, Type};
 use crate::ir::{Class, Function, Program};
 use crate::ir::{Expr, Identifier, Parameter, Statement, Terminator, intern, resolve};
 use anyhow::Result;
@@ -74,15 +74,15 @@ impl GlobalAnalysis {
 
     pub fn analyze_func(&mut self, func: &Function) -> Result<()> {
         let name = func.identifier.clone();
-        let mut func_analysis = FunctionAnalysis::new(func, Arc::clone(&self.models), None);
-        func_analysis.analyze_func(func)?;
+        let mut func_analysis = FunctionAnalysis::new(func, None);
+        func_analysis.analyze_func(func, self)?;
         self.functions.insert(name, func_analysis);
         Ok(())
     }
 
     pub fn analyze_class(&mut self, class: &Class) -> Result<()> {
         let name = class.identifier.clone();
-        let class_analysis = analyze_class(class, Arc::clone(&self.models))?;
+        let class_analysis = analyze_class(class, self)?;
         self.classes.insert(name, class_analysis);
         Ok(())
     }
@@ -163,7 +163,6 @@ pub struct FunctionAnalysis {
     // from using bitsets, if the speedup is worth it
     pub id: Identifier,
     pub state: HashMap<Location, AnalysisDomain>,
-    pub models: Arc<ModelContext>,
     pub function: Function,
 }
 
@@ -173,11 +172,7 @@ impl FunctionAnalysis {
     /// If `class_attributes` is `Some`, this is a method analysis and the state will include
     /// both the class attributes (self.X) and function parameters.
     /// If `class_attributes` is `None`, this is a top-level function and only params will be used.
-    fn new(
-        func: &Function,
-        models: Arc<ModelContext>,
-        class_attributes: Option<AnalysisDomain>,
-    ) -> Self {
+    fn new(func: &Function, class_attributes: Option<AnalysisDomain>) -> Self {
         let mut state = HashMap::new();
 
         let mut start_domain = AnalysisDomain::new();
@@ -199,7 +194,6 @@ impl FunctionAnalysis {
         Self {
             id: func.identifier.clone(),
             state,
-            models,
             function: func.clone(),
         }
     }
@@ -209,23 +203,36 @@ impl FunctionAnalysis {
     }
 
     /// Dispatch expr to eval_* methods, returning set of possible lattice elements.
-    fn eval_expr(&mut self, domain: &AnalysisDomain, expr: &Expr) -> Result<HashSet<Variable>> {
+    fn eval_expr(
+        &mut self,
+        domain: &AnalysisDomain,
+        expr: &Expr,
+        global: &GlobalAnalysis,
+    ) -> Result<HashSet<Variable>> {
         match &expr.kind {
             ExprKind::Binop { left, right, op } => {
-                self.eval_binop(domain, left, right, *op, expr.span)
+                self.eval_binop(domain, left, right, *op, expr.span, global)
             }
             ExprKind::Call {
                 function,
                 pos_args,
                 keyword_args,
-            } => self.eval_call(domain, function, pos_args, keyword_args, expr.span),
+            } => self.eval_call(
+                domain,
+                function,
+                pos_args,
+                keyword_args,
+                expr.span,
+                expr.ty.clone(),
+                global,
+            ),
             ExprKind::Constant(c) => self.eval_constant(c),
             ExprKind::Ident(_name) => self.eval_ident(domain, expr),
             ExprKind::Attribute { value, attr } => self.eval_attribute(domain, value, attr, expr),
             ExprKind::Index { receiver, index } => {
-                self.eval_index(domain, receiver, index, expr.span)
+                self.eval_index(domain, receiver, index, expr.span, global)
             }
-            ExprKind::Tuple(exprs) => self.eval_tuple(domain, exprs),
+            ExprKind::Tuple(exprs) => self.eval_tuple(domain, exprs, global),
         }
     }
 
@@ -238,9 +245,10 @@ impl FunctionAnalysis {
         right: &Expr,
         op: Binop,
         span: SourceSpan,
+        global: &GlobalAnalysis,
     ) -> Result<HashSet<Variable>> {
-        let l_vars = self.eval_expr(domain, left)?;
-        let r_vars = self.eval_expr(domain, right)?;
+        let l_vars = self.eval_expr(domain, left, global)?;
+        let r_vars = self.eval_expr(domain, right, global)?;
 
         let mut out_vars = HashSet::new();
 
@@ -251,14 +259,14 @@ impl FunctionAnalysis {
                 (Variable::Top, _) | (_, Variable::Top) => Variable::Top,
                 (Variable::Tensor(_), Variable::Tensor(_)) => {
                     if is_matmul {
-                        let out_shape = self.models.torch.matmul.infer(
+                        let out_shape = global.models.torch.matmul.infer(
                             vec![l_var, r_var],
                             HashMap::new(),
                             span,
                         )?;
                         Variable::Tensor(out_shape)
                     } else {
-                        let out_shape = self.models.torch.broadcast.infer(
+                        let out_shape = global.models.torch.broadcast.infer(
                             vec![l_var, r_var],
                             HashMap::new(),
                             span,
@@ -368,10 +376,15 @@ impl FunctionAnalysis {
     }
 
     /// Calls eval_expr on each expr in tuple and returns cartesian product
-    fn eval_tuple(&mut self, domain: &AnalysisDomain, exprs: &[Expr]) -> Result<HashSet<Variable>> {
+    fn eval_tuple(
+        &mut self,
+        domain: &AnalysisDomain,
+        exprs: &[Expr],
+        global: &GlobalAnalysis,
+    ) -> Result<HashSet<Variable>> {
         let results = exprs
             .iter()
-            .map(|e| self.eval_expr(domain, e))
+            .map(|e| self.eval_expr(domain, e, global))
             .collect::<Result<Vec<HashSet<Variable>>>>()?;
 
         let products = results
@@ -390,9 +403,163 @@ impl FunctionAnalysis {
         pos_args: &[Expr],
         keyword_args: &[(Identifier, Expr)],
         span: SourceSpan,
+        call_ty: Type,
+        global: &GlobalAnalysis,
     ) -> Result<HashSet<Variable>> {
-        let args_sets = self.eval_call_args(domain, pos_args)?;
-        let kwargs_sets = self.eval_call_kwargs(domain, keyword_args)?;
+        let args_sets = self.eval_call_args(domain, pos_args, global)?;
+        let kwargs_sets = self.eval_call_kwargs(domain, keyword_args, global)?;
+
+        match &call_ty {
+            Type::Constructor(class_id) => {
+                self.eval_constructor(*class_id, &args_sets, &kwargs_sets, global)
+            }
+            Type::Method(class_id) => self.eval_method(
+                *class_id,
+                function,
+                domain,
+                &args_sets,
+                &kwargs_sets,
+                span,
+                global,
+            ),
+            _ => self.eval_function(function, &args_sets, &kwargs_sets, span, global),
+        }
+    }
+
+    fn eval_constructor(
+        &mut self,
+        class_id: Identifier,
+        args_sets: &[HashSet<Variable>],
+        kwargs_sets: &[(Identifier, HashSet<Variable>)],
+        global: &GlobalAnalysis,
+    ) -> Result<HashSet<Variable>> {
+        let mut out_vars = HashSet::new();
+
+        if let Some(class_analysis) = global.classes.get(&class_id) {
+            let args_products = args_sets.iter().multi_cartesian_product();
+            let kw_names = kwargs_sets.iter().map(|(n, _)| *n);
+            let kwargs_products: Vec<HashMap<Identifier, _>> = kwargs_sets
+                .iter()
+                .map(|(_, vars)| vars)
+                .multi_cartesian_product()
+                .map(|vars| kw_names.clone().zip(vars).collect())
+                .collect();
+
+            // For each combination of args/kwargs, create an instance
+            for (args_refs, kwargs_ref) in args_products.cartesian_product(kwargs_products.iter()) {
+                // Convert references to owned values
+                let args: Vec<Variable> = args_refs.iter().map(|v| (*v).clone()).collect();
+                let kwargs: HashMap<Identifier, Variable> =
+                    kwargs_ref.iter().map(|(k, v)| (*k, (*v).clone())).collect();
+
+                let any_top = args.iter().any(|v| matches!(v, Variable::Top))
+                    || kwargs.iter().any(|(_, v)| matches!(v, Variable::Top));
+                if any_top {
+                    out_vars.insert(Variable::Top);
+                } else {
+                    // Create class instance with concrete substitutions
+                    let instance = class_analysis.create_instance(&args, &kwargs)?;
+                    out_vars.insert(instance);
+                }
+            }
+        } else {
+            // Class not found in analysis
+            out_vars.insert(Variable::Top);
+        }
+
+        Ok(out_vars)
+    }
+
+    fn eval_method(
+        &mut self,
+        class_id: Identifier,
+        function: &Expr,
+        domain: &AnalysisDomain,
+        args_sets: &[HashSet<Variable>],
+        kwargs_sets: &[(Identifier, HashSet<Variable>)],
+        span: SourceSpan,
+        global: &GlobalAnalysis,
+    ) -> Result<HashSet<Variable>> {
+        let mut out_vars = HashSet::new();
+
+        // Extract receiver and method name from the function expression
+        let (receiver_expr, method_name) = match &function.kind {
+            ExprKind::Attribute { value, attr } => (value, *attr),
+            _ => {
+                // Shouldn't happen if type inference is correct
+                out_vars.insert(Variable::Top);
+                return Ok(out_vars);
+            }
+        };
+
+        // Evaluate the receiver to get ClassInstance variables
+        let receiver_vars = self.eval_expr(domain, receiver_expr, global)?;
+
+        // Compute products for method calls
+        let method_args_products: Vec<Vec<&Variable>> =
+            args_sets.iter().multi_cartesian_product().collect();
+        let method_kw_names = kwargs_sets.iter().map(|(n, _)| *n);
+        let method_kwargs_products: Vec<HashMap<Identifier, _>> = kwargs_sets
+            .iter()
+            .map(|(_, vars)| vars)
+            .multi_cartesian_product()
+            .map(|vars| method_kw_names.clone().zip(vars).collect())
+            .collect();
+
+        // Get the class analysis
+        if let Some(class_analysis) = global.classes.get(&class_id) {
+            // For each receiver ClassInstance and each combination of args/kwargs
+            for receiver_var in &receiver_vars {
+                if let Variable::ClassInstance(instance) = receiver_var {
+                    // Get the substituted signature for this method
+                    let signature_model =
+                        class_analysis.get_method_signature(method_name, instance)?;
+
+                    // For each combination of args/kwargs, use the signature model
+                    for (args_refs, kwargs_ref) in method_args_products
+                        .iter()
+                        .cartesian_product(method_kwargs_products.iter())
+                    {
+                        // Convert references to &Variable for the model
+                        let args: Vec<&Variable> = args_refs.iter().map(|v| *v).collect();
+                        let kwargs: HashMap<Identifier, &Variable> =
+                            kwargs_ref.iter().map(|(k, v)| (*k, *v)).collect();
+
+                        let any_top = args.iter().any(|v| matches!(**v, Variable::Top))
+                            || kwargs.iter().any(|(_, v)| matches!(**v, Variable::Top));
+                        if any_top {
+                            out_vars.insert(Variable::Top);
+                        } else {
+                            // Use the signature model to infer the result
+                            let result_shape = signature_model.infer(args, kwargs, span)?;
+                            out_vars.insert(Variable::Tensor(result_shape));
+                        }
+                    }
+                } else {
+                    // Receiver is not a ClassInstance
+                    out_vars.insert(Variable::Top);
+                }
+            }
+        } else {
+            // Class not found in analysis
+            out_vars.insert(Variable::Top);
+        }
+
+        Ok(out_vars)
+    }
+
+    fn eval_function(
+        &mut self,
+        function: &Expr,
+        args_sets: &[HashSet<Variable>],
+        kwargs_sets: &[(Identifier, HashSet<Variable>)],
+        span: SourceSpan,
+        global: &GlobalAnalysis,
+    ) -> Result<HashSet<Variable>> {
+        let mut out_vars = HashSet::new();
+
+        // Resolve function name - for now assume it's an ident or attribute chain
+        let func_name = self.expr_to_dot_string(function);
 
         let args_products = args_sets.iter().multi_cartesian_product();
         let kw_names = kwargs_sets.iter().map(|(n, _)| *n);
@@ -403,12 +570,7 @@ impl FunctionAnalysis {
             .map(|vars| kw_names.clone().zip(vars).collect())
             .collect();
 
-        let mut out_vars = HashSet::new();
-
-        // Resolve function name - for now assume it's an ident or attribute chain
-        let func_name = self.expr_to_dot_string(function);
-
-        match self.models.resolve(&func_name) {
+        match global.models.resolve(&func_name) {
             Some(model) => {
                 for (args, kwargs) in args_products.cartesian_product(kwargs_products) {
                     let any_top = args.iter().any(|v| matches!(v, Variable::Top))
@@ -434,9 +596,10 @@ impl FunctionAnalysis {
         &mut self,
         domain: &AnalysisDomain,
         args: &[Expr],
+        global: &GlobalAnalysis,
     ) -> Result<Vec<HashSet<Variable>>> {
         args.iter()
-            .map(|arg_expr| self.eval_expr(domain, arg_expr))
+            .map(|arg_expr| self.eval_expr(domain, arg_expr, global))
             .collect()
     }
 
@@ -445,10 +608,11 @@ impl FunctionAnalysis {
         &mut self,
         domain: &AnalysisDomain,
         kwargs: &[(Identifier, Expr)],
+        global: &GlobalAnalysis,
     ) -> Result<Vec<(Identifier, HashSet<Variable>)>> {
         kwargs
             .iter()
-            .map(|(n, arg_expr)| Ok((*n, self.eval_expr(domain, arg_expr)?)))
+            .map(|(n, arg_expr)| Ok((*n, self.eval_expr(domain, arg_expr, global)?)))
             .collect()
     }
 
@@ -470,9 +634,10 @@ impl FunctionAnalysis {
         receiver: &Expr,
         index: &[Either<Expr, Slice>],
         _span: SourceSpan,
+        global: &GlobalAnalysis,
     ) -> Result<HashSet<Variable>> {
-        let vars = self.eval_expr(domain, receiver)?;
-        let indices = self.eval_indices(domain, index)?;
+        let vars = self.eval_expr(domain, receiver, global)?;
+        let indices = self.eval_indices(domain, index, global)?;
 
         let mut set = HashSet::new();
         'possible_slices_loop: for (var, index) in vars
@@ -500,6 +665,7 @@ impl FunctionAnalysis {
                 }
                 Variable::DimVar(_) => (),
                 Variable::None => (),
+                Variable::ClassInstance(_) => {}
             }
         }
 
@@ -512,23 +678,24 @@ impl FunctionAnalysis {
         &mut self,
         domain: &AnalysisDomain,
         index: &[Either<Expr, Slice>],
+        global: &GlobalAnalysis,
     ) -> Result<Vec<HashSet<Either<Variable, DimSlice>>>> {
         index
             .iter()
             .map(|v| -> Result<HashSet<Either<Variable, DimSlice>>> {
                 Ok(match v {
                     Either::Left(l) => self
-                        .eval_expr(domain, l)?
+                        .eval_expr(domain, l, global)?
                         .into_iter()
                         .map(Either::Left)
                         .collect::<HashSet<_>>(),
                     Either::Right(Slice { lower, upper }) => {
                         let lowers = match lower {
-                            Some(expr_lower) => Some(self.eval_expr(domain, expr_lower)?),
+                            Some(expr_lower) => Some(self.eval_expr(domain, expr_lower, global)?),
                             None => None,
                         };
                         let uppers = match upper {
-                            Some(expr_upper) => Some(self.eval_expr(domain, expr_upper)?),
+                            Some(expr_upper) => Some(self.eval_expr(domain, expr_upper, global)?),
                             None => None,
                         };
 
@@ -666,8 +833,13 @@ impl FunctionAnalysis {
     }
 
     /// Eval expr, updating target if this statement is an assignment.
-    fn handle_stmt(&mut self, domain: &mut AnalysisDomain, stmt: &Statement) -> Result<()> {
-        let res_var = self.eval_expr(domain, &stmt.value)?;
+    fn handle_stmt(
+        &mut self,
+        domain: &mut AnalysisDomain,
+        stmt: &Statement,
+        global: &GlobalAnalysis,
+    ) -> Result<()> {
+        let res_var = self.eval_expr(domain, &stmt.value, global)?;
 
         if let Some(target) = &stmt.target {
             match &target.kind {
@@ -696,16 +868,21 @@ impl FunctionAnalysis {
 
     /// Eval potential exprs to check for shape consistency.
     /// We don't model side effects so the domain won't change.
-    fn handle_term(&mut self, domain: &mut AnalysisDomain, term: &Terminator) -> Result<()> {
+    fn handle_term(
+        &mut self,
+        domain: &mut AnalysisDomain,
+        term: &Terminator,
+        global: &GlobalAnalysis,
+    ) -> Result<()> {
         match term {
             Terminator::CondJump { cond, .. } => {
                 if let Some(expr) = cond {
-                    self.eval_expr(domain, expr)?;
+                    self.eval_expr(domain, expr, global)?;
                 }
             }
             Terminator::Return(expr) => {
                 if let Some(expr) = expr {
-                    self.eval_expr(domain, expr)?;
+                    self.eval_expr(domain, expr, global)?;
                 }
             }
             Terminator::Jump(_) => (),
@@ -715,7 +892,7 @@ impl FunctionAnalysis {
     }
 
     /// Run single-pass dataflow analysis on function
-    fn analyze_func(&mut self, func: &Function) -> Result<()> {
+    fn analyze_func(&mut self, func: &Function, global: &GlobalAnalysis) -> Result<()> {
         for loc in func.locations.iter() {
             let mut domain = AnalysisDomain::new();
             let preds = func.predecessors(loc);
@@ -727,8 +904,8 @@ impl FunctionAnalysis {
                 }
             }
             let result = match func.instr(loc) {
-                Either::Left(stmt) => self.handle_stmt(&mut domain, stmt),
-                Either::Right(term) => self.handle_term(&mut domain, term),
+                Either::Left(stmt) => self.handle_stmt(&mut domain, stmt, global),
+                Either::Right(term) => self.handle_term(&mut domain, term, global),
             };
             if let Err(e) = result {
                 eprintln!(
@@ -747,10 +924,10 @@ impl FunctionAnalysis {
 pub struct ClassAnalysis {
     /// The identifier of the class being analyzed
     pub id: Identifier,
-    /// Mapping from attribute names (like "fc1", "fc2") to their inferred Variables.
+    /// Mapping from attribute names to their inferred Variables.
     /// The Variables' dimvars are in terms of the annotated dimvars of the __init__ method.
     pub attributes: HashMap<Identifier, HashSet<Variable>>,
-    /// Analysis results for each method (excluding __init__).
+    /// Analysis results for each method (including __init__).
     /// These are used for consistency checking.
     pub methods: HashMap<Identifier, FunctionAnalysis>,
 }
@@ -760,7 +937,7 @@ pub struct ClassAnalysis {
 /// This function:
 /// 1. Analyzes the `__init__` method as a special case to extract attribute shapes
 /// 2. Analyzes other methods for consistency checking
-pub fn analyze_class(class: &Class, models: Arc<ModelContext>) -> Result<ClassAnalysis> {
+pub fn analyze_class(class: &Class, global: &GlobalAnalysis) -> Result<ClassAnalysis> {
     let init_method_name = intern("__init__");
 
     // Find the __init__ method
@@ -773,8 +950,8 @@ pub fn analyze_class(class: &Class, models: Arc<ModelContext>) -> Result<ClassAn
     // TODO: Handle superclass inheritance - if __init__ is missing, check parent classes
 
     // Analyze __init__ method to extract attribute shapes
-    let mut init_analysis = FunctionAnalysis::new(init_method, Arc::clone(&models), None);
-    init_analysis.analyze_func(init_method)?;
+    let mut init_analysis = FunctionAnalysis::new(init_method, None);
+    init_analysis.analyze_func(init_method, global)?;
 
     // Extract self.X assignments from final locations only
     // We look at final locations (Return terminators) and collect any "self.X" entries
@@ -810,17 +987,16 @@ pub fn analyze_class(class: &Class, models: Arc<ModelContext>) -> Result<ClassAn
 
     // Check other methods
     let mut methods = HashMap::new();
+    methods.insert(init_method_name, init_analysis);
+
     for (method_name, method_func) in &class.methods {
         if *method_name == init_method_name {
             continue;
         }
 
-        let mut method_analysis = FunctionAnalysis::new(
-            method_func,
-            Arc::clone(&models),
-            Some(method_class_attributes.clone()),
-        );
-        method_analysis.analyze_func(method_func)?;
+        let mut method_analysis =
+            FunctionAnalysis::new(method_func, Some(method_class_attributes.clone()));
+        method_analysis.analyze_func(method_func, global)?;
         methods.insert(*method_name, method_analysis);
     }
 
@@ -829,6 +1005,179 @@ pub fn analyze_class(class: &Class, models: Arc<ModelContext>) -> Result<ClassAn
         attributes,
         methods,
     })
+}
+
+impl ClassAnalysis {
+    /// Create a class instance with concrete dimension variable substitutions.
+    /// Takes resolved arguments and keyword arguments and computes the DimVar substitutions from
+    /// parameter annotations to concrete values.
+    pub fn create_instance(
+        &self,
+        args: &[Variable],
+        kwargs: &HashMap<Identifier, Variable>,
+    ) -> Result<Variable> {
+        let init_method_name = intern("__init__");
+        let init_analysis = self.methods.get(&init_method_name).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Class {} missing __init__ method in methods",
+                resolve(self.id)
+            )
+        })?;
+
+        let mut substitutions = BTreeMap::new();
+
+        // Match positional arguments to parameters
+        for (i, param) in init_analysis.function.params.iter().enumerate() {
+            // Skip the instance parameter
+            if i == 0 {
+                continue;
+            }
+
+            let Parameter(param_name, param_annotation) = param;
+
+            // Get the argument value (either from positional args or kwargs)
+            let arg_value = if (i - 1) < args.len() {
+                &args[i - 1]
+            } else if let Some(kwarg_value) = kwargs.get(param_name) {
+                kwarg_value
+            } else {
+                // Parameter not provided - skip
+                continue;
+            };
+
+            // Extract DimVar from parameter annotation if it's a DimVar
+            if let Some(param_var) = param_annotation {
+                if let Variable::DimVar(param_dimvar) = param_var {
+                    // Extract concrete DimVar from argument
+                    // For now, we only handle cases where the argument is a DimVar
+                    if let Variable::DimVar(concrete_dimvar) = arg_value {
+                        substitutions.insert(param_dimvar.clone(), concrete_dimvar.clone()); // TODO: will this work for dimvar exprs?
+                    }
+                    // TODO: Handle cases where argument is a Tensor and we need to extract dimvars from shape
+                }
+                // TODO: handle cases where param is a Tensor
+            }
+        }
+
+        // Also check kwargs that weren't matched positionally
+        for (kwarg_name, kwarg_value) in kwargs {
+            // Check if this kwarg matches a parameter name (excluding the first parameter)
+            if let Some((param_idx, param)) = init_analysis
+                .function
+                .params
+                .iter()
+                .enumerate()
+                .find(|(idx, p)| idx > &0 && &p.0 == kwarg_name)
+            {
+                let Parameter(_, param_annotation) = param;
+                if let Some(param_var) = param_annotation {
+                    if let Variable::DimVar(param_dimvar) = param_var {
+                        if let Variable::DimVar(concrete_dimvar) = kwarg_value {
+                            substitutions.insert(param_dimvar.clone(), concrete_dimvar.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(Variable::ClassInstance(ClassInstance {
+            class_id: self.id,
+            substitutions,
+        }))
+    }
+
+    /// Get a SignatureModel for a method with substitutions applied from a ClassInstance.
+    /// This substitutes the method's parameter annotations and return type using the instance's substitutions.
+    pub fn get_method_signature(
+        &self,
+        method_name: Identifier,
+        instance: &ClassInstance,
+    ) -> Result<SignatureModel> {
+        let method_analysis = self.methods.get(&method_name).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Method {} not found in class {}",
+                resolve(method_name),
+                resolve(self.id)
+            )
+        })?;
+        let method = &method_analysis.function;
+
+        // Apply substitutions to parameters and return type
+        let substituted_params: Vec<Parameter> = method
+            .params
+            .iter()
+            .skip(1) // skip instance param
+            .map(|Parameter(name, var_opt)| {
+                let substituted_var = var_opt
+                    .as_ref()
+                    .map(|v| Self::substitute_variable(v, &instance.substitutions));
+                Parameter(*name, substituted_var)
+            })
+            .collect();
+
+        let substituted_returns = method_analysis.function.returns.as_ref().map(|returns| {
+            returns
+                .iter()
+                .map(|v| Self::substitute_variable(v, &instance.substitutions))
+                .collect()
+        });
+
+        Ok(SignatureModel {
+            params: substituted_params,
+            returns: substituted_returns,
+        })
+    }
+
+    /// Apply DimVar substitutions to a Variable, recursively substituting DimVars in shapes and tuples.
+    fn substitute_variable(var: &Variable, substitutions: &BTreeMap<DimVar, DimVar>) -> Variable {
+        match var {
+            Variable::DimVar(dv) => {
+                // Substitute the DimVar using the map
+                // Convert BTreeMap<DimVar, DimVar> to HashMap<String, DimVar> for DimVar::substitute
+                let mut string_map = HashMap::new();
+                for (param_dv, concrete_dv) in substitutions {
+                    if let DimKind::Named(name) = param_dv.kind() {
+                        string_map.insert(name, concrete_dv.clone());
+                    }
+                }
+                if let Ok(substituted) = dv.substitute(&string_map) {
+                    Variable::DimVar(substituted)
+                } else {
+                    var.clone()
+                }
+            }
+            Variable::Tensor(shape) => {
+                // Substitute DimVars in the shape
+                let substituted_dims: Vec<DimVar> = shape
+                    .0
+                    .iter()
+                    .map(|dv| {
+                        let mut string_map = HashMap::new();
+                        for (param_dv, concrete_dv) in substitutions {
+                            if let DimKind::Named(name) = param_dv.kind() {
+                                string_map.insert(name, concrete_dv.clone());
+                            }
+                        }
+                        dv.substitute(&string_map).unwrap_or_else(|_| dv.clone())
+                    })
+                    .collect();
+                Variable::Tensor(Shape(substituted_dims))
+            }
+            Variable::Tuple(vars) => {
+                // Recursively substitute in tuple elements
+                let substituted_vars: Vec<Variable> = vars
+                    .iter()
+                    .map(|v| Self::substitute_variable(v, substitutions))
+                    .collect();
+                Variable::Tuple(substituted_vars)
+            }
+            Variable::ClassInstance(_) => {
+                // TODO: Handle nested class instances
+                var.clone()
+            }
+            Variable::Top | Variable::None => var.clone(),
+        }
+    }
 }
 
 pub fn analyze(prog: Program) -> Result<GlobalAnalysis> {

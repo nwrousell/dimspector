@@ -30,6 +30,23 @@ impl fmt::Display for Variable {
             Variable::Tensor(shape) => write!(f, "{}", shape),
             Variable::Tuple(vars) => write_comma_separated(f, vars),
             Variable::None => write!(f, "None"),
+            Variable::ClassInstance(instance) => {
+                use crate::ir::types::resolve;
+                write!(f, "{}", resolve(instance.class_id))?;
+                if !instance.substitutions.is_empty() {
+                    write!(f, "{{")?;
+                    let mut first = true;
+                    for (param_dv, concrete_dv) in &instance.substitutions {
+                        if !first {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}->{}", param_dv, concrete_dv)?;
+                        first = false;
+                    }
+                    write!(f, "}}")?;
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -185,11 +202,27 @@ pub fn function_with_inferred_shapes_to_string(
             };
 
             let annotated_stmt = if let Some(target) = &stmt.target {
-                // Only show annotation for Ident targets
-                let annotation = if let ExprKind::Ident(name) = &target.kind {
-                    format_annotation(domain, name)
-                } else {
-                    "{}".to_owned()
+                // Show annotation for Ident targets and self.X Attribute targets
+                let annotation = match &target.kind {
+                    ExprKind::Ident(name) => format_annotation(domain, name),
+                    ExprKind::Attribute { value, attr } => {
+                        // Handle self.X assignments
+                        if let ExprKind::Ident(self_ident) = &value.kind {
+                            if crate::ir::resolve(*self_ident) == "self" {
+                                // Look up "self.X" in domain
+                                let self_attr_name = crate::ir::intern(&format!(
+                                    "self.{}",
+                                    crate::ir::resolve(*attr)
+                                ));
+                                format_annotation(domain, &self_attr_name)
+                            } else {
+                                "{}".to_owned()
+                            }
+                        } else {
+                            "{}".to_owned()
+                        }
+                    }
+                    _ => "{}".to_owned(),
                 };
                 format!("{}: {} = {}", target, annotation, stmt.value)
             } else {
