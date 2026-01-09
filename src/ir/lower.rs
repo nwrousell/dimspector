@@ -8,10 +8,11 @@ use petgraph::{
 };
 
 use ruff_python_ast::{
-    Expr as ASTExpr, ExprAttribute, ExprBinOp, ExprCall, ExprCompare, ExprFString, ExprList,
-    ExprName, ExprNumberLiteral, ExprSlice, ExprStringLiteral, ExprSubscript, ExprTuple,
-    ExprUnaryOp, Keyword, Number, Stmt as ASTStmt, StmtAssign, StmtAugAssign, StmtClassDef,
-    StmtExpr, StmtFor, StmtFunctionDef, StmtIf, StmtReturn, StmtWhile, StmtWith, UnaryOp,
+    Expr as ASTExpr, ExprAttribute, ExprBinOp, ExprCall, ExprCompare, ExprEllipsisLiteral,
+    ExprFString, ExprList, ExprName, ExprNumberLiteral, ExprSlice, ExprStringLiteral,
+    ExprSubscript, ExprTuple, ExprUnaryOp, Keyword, Number, Stmt as ASTStmt, StmtAssign,
+    StmtAugAssign, StmtClassDef, StmtExpr, StmtFor, StmtFunctionDef, StmtIf, StmtReturn, StmtWhile,
+    StmtWith, UnaryOp,
 };
 use ruff_text_size::TextRange;
 use ty_project::ProjectDatabase;
@@ -610,6 +611,9 @@ impl<'db> LowerBody<'db> {
                 }
 
                 res
+            }
+            ASTExpr::EllipsisLiteral(_) => {
+                todo!("handle ellipsis")
             }
             _ => vec![Either::Left(self.lower_expr(expr)?)],
         })

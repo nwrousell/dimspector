@@ -12,7 +12,6 @@ class PaddedLayer:
         self.weight = torch.randn(self.padded_dim, 64)
 
     def forward(self, x: Float[Tensor, "b in_dim"]) -> Float[Tensor, "b 64"]:
-        # Pad the input
         padded = torch.nn.functional.pad(x, (self.padding, self.padding))
         return padded @ self.weight
 
