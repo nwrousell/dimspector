@@ -583,7 +583,7 @@ impl FunctionAnalysis {
                 }
             }
             None => {
-                println!("couldn't resolve function {} to model", func_name);
+                log::debug!("couldn't resolve function {} to model", func_name);
                 out_vars.insert(Variable::Top);
             }
         }
@@ -752,8 +752,17 @@ impl FunctionAnalysis {
 
         for (i, dim) in index_or_slice.iter().enumerate() {
             match dim {
-                // TODO: actually parse this, assuming it's a dimvar right now
-                Either::Left(_v) => continue,
+                Either::Left(v) => {
+                    match v {
+                        Variable::DimVar(_) => {
+                            continue; // any index removes this dimension from the resulting shape
+                        }
+                        _ => {
+                            // index doesn't make sense
+                            return Ok(None);
+                        }
+                    }
+                }
                 Either::Right(DimSlice { lower, upper }) => {
                     let l_bound = match lower {
                         Some(Variable::DimVar(dvar)) => dvar.clone(),
@@ -786,6 +795,11 @@ impl FunctionAnalysis {
                     out_dims.push(u_bound - l_bound)
                 }
             }
+        }
+
+        // Add all remaining dimensions that weren't indexed
+        for remaining_dim in &dims[index_or_slice.len()..] {
+            out_dims.push(remaining_dim.clone());
         }
 
         Ok(Some(Variable::Tensor(Shape(out_dims))))
@@ -1026,36 +1040,27 @@ impl ClassAnalysis {
 
         let mut substitutions = BTreeMap::new();
 
-        // Match positional arguments to parameters
-        for (i, param) in init_analysis.function.params.iter().enumerate() {
-            // Skip the instance parameter
-            if i == 0 {
-                continue;
-            }
+        // Match up all (param, arg) pairs
+        let mut param_arg_pairs = Vec::new();
+        let mut matched_param_indices = std::collections::HashSet::new();
 
-            let Parameter(param_name, param_annotation) = param;
-
-            // Get the argument value (either from positional args or kwargs)
-            let arg_value = if (i - 1) < args.len() {
-                &args[i - 1]
+        // Match positional arguments to parameters (skip instance parameter)
+        for (i, Parameter(param_name, param_annotation)) in
+            init_analysis.function.params.iter().skip(1).enumerate()
+        {
+            let arg_value = if i < args.len() {
+                Some(&args[i])
             } else if let Some(kwarg_value) = kwargs.get(param_name) {
-                kwarg_value
+                Some(kwarg_value)
             } else {
-                // Parameter not provided - skip
-                continue;
+                None // Parameter not provided
             };
 
-            // Extract DimVar from parameter annotation if it's a DimVar
-            if let Some(param_var) = param_annotation {
-                if let Variable::DimVar(param_dimvar) = param_var {
-                    // Extract concrete DimVar from argument
-                    // For now, we only handle cases where the argument is a DimVar
-                    if let Variable::DimVar(concrete_dimvar) = arg_value {
-                        substitutions.insert(param_dimvar.clone(), concrete_dimvar.clone()); // TODO: will this work for dimvar exprs?
-                    }
-                    // TODO: Handle cases where argument is a Tensor and we need to extract dimvars from shape
+            if let Some(arg) = arg_value {
+                if let Some(param_var) = param_annotation {
+                    param_arg_pairs.push((param_var.clone(), arg.clone()));
+                    matched_param_indices.insert(i + 1); // we skipped instance param
                 }
-                // TODO: handle cases where param is a Tensor
             }
         }
 
@@ -1069,14 +1074,25 @@ impl ClassAnalysis {
                 .enumerate()
                 .find(|(idx, p)| idx > &0 && &p.0 == kwarg_name)
             {
+                // Skip if this parameter was already matched
+                if matched_param_indices.contains(&param_idx) {
+                    continue;
+                }
+
                 let Parameter(_, param_annotation) = param;
                 if let Some(param_var) = param_annotation {
-                    if let Variable::DimVar(param_dimvar) = param_var {
-                        if let Variable::DimVar(concrete_dimvar) = kwarg_value {
-                            substitutions.insert(param_dimvar.clone(), concrete_dimvar.clone());
-                        }
-                    }
+                    param_arg_pairs.push((param_var.clone(), kwarg_value.clone()));
+                    matched_param_indices.insert(param_idx);
                 }
+            }
+        }
+
+        // Process each (param, arg) pair to extract substitutions
+        for (param_var, arg_var) in param_arg_pairs {
+            if let Some(new_substitutions) =
+                self.extract_substitutions_from_pair(&param_var, &arg_var)?
+            {
+                substitutions.extend(new_substitutions);
             }
         }
 
@@ -1084,6 +1100,64 @@ impl ClassAnalysis {
             class_id: self.id,
             substitutions,
         }))
+    }
+
+    /// Extract dimension variable substitutions from a (param, arg) pair.
+    /// Returns a map of substitutions if any can be extracted, None otherwise.
+    fn extract_substitutions_from_pair(
+        &self,
+        param_var: &Variable,
+        arg_var: &Variable,
+    ) -> Result<Option<BTreeMap<DimVar, DimVar>>> {
+        // If types don't match, we can't extract substitutions
+        if !std::mem::discriminant(param_var).eq(&std::mem::discriminant(arg_var)) {
+            return Ok(None);
+        }
+
+        let mut substitutions = BTreeMap::new();
+
+        match (param_var, arg_var) {
+            (Variable::DimVar(param_dimvar), Variable::DimVar(arg_dimvar)) => {
+                // TODO: handle dim exprs
+                substitutions.insert(param_dimvar.clone(), arg_dimvar.clone());
+            }
+
+            // Tensor -> recur for each dimvar
+            (Variable::Tensor(param_shape), Variable::Tensor(arg_shape)) => {
+                if param_shape.0.len() == arg_shape.0.len() {
+                    for (param_dim, arg_dim) in param_shape.0.iter().zip(arg_shape.0.iter()) {
+                        if let Some(recursive_subs) = self.extract_substitutions_from_pair(
+                            &Variable::DimVar(param_dim.clone()),
+                            &Variable::DimVar(arg_dim.clone()),
+                        )? {
+                            substitutions.extend(recursive_subs);
+                        }
+                    }
+                }
+            }
+
+            // Tuple -> recur for each element
+            (Variable::Tuple(param_vars), Variable::Tuple(arg_vars)) => {
+                if param_vars.len() == arg_vars.len() {
+                    for (param_elem, arg_elem) in param_vars.iter().zip(arg_vars.iter()) {
+                        if let Some(recursive_subs) =
+                            self.extract_substitutions_from_pair(param_elem, arg_elem)?
+                        {
+                            substitutions.extend(recursive_subs);
+                        }
+                    }
+                }
+            }
+            _ => {
+                // Other matching types (Top, None, ClassInstance) don't have dimvars to extract
+            }
+        }
+
+        if substitutions.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(substitutions))
+        }
     }
 
     /// Get a SignatureModel for a method with substitutions applied from a ClassInstance.
