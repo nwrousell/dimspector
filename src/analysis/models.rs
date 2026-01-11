@@ -42,10 +42,10 @@ pub struct ModelContext {
 }
 
 impl ModelContext {
-    pub fn new(funcs: &Vec<Function>) -> Self {
+    pub fn new(funcs: &Vec<Function>, symbol_table: &crate::parse::SymbolTable) -> Self {
         Self {
             torch: TorchModels::default(),
-            user: UserModels::new(funcs),
+            user: UserModels::new(funcs, symbol_table),
         }
     }
 }
@@ -56,12 +56,17 @@ pub struct UserModels {
 }
 
 impl UserModels {
-    fn new(funcs: &Vec<Function>) -> Self {
+    fn new(funcs: &Vec<Function>, symbol_table: &crate::parse::SymbolTable) -> Self {
         let map: HashMap<String, Box<dyn Model>> = funcs
             .iter()
             .map(|f| {
+                let local_name = resolve(f.identifier);
+                let canonical = symbol_table
+                    .resolve(&f.file_path, &local_name)
+                    .cloned()
+                    .unwrap_or(local_name);
                 (
-                    resolve(f.identifier),
+                    canonical,
                     Box::new(SignatureModel::new(f)) as Box<dyn Model>,
                 )
             })

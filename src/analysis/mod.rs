@@ -16,8 +16,9 @@ pub use crate::analysis::dimvars::{DimKind, DimVar};
 use crate::analysis::models::{Model, ModelContext, SignatureModel};
 use crate::analysis::types::{ClassInstance, DimSlice};
 use crate::ir::types::{Binop, Constant, ExprKind, Location, Slice, Type};
-use crate::ir::{Class, Function, Program};
+use crate::ir::{Class, File, Function, Project};
 use crate::ir::{Expr, Identifier, Parameter, Statement, Terminator, intern, resolve};
+use crate::parse::SymbolTable;
 use anyhow::Result;
 pub use errors::ShapeError;
 type AnalysisDomain = HashMap<Identifier, HashSet<Variable>>;
@@ -48,6 +49,7 @@ pub struct GlobalAnalysis {
     pub functions: HashMap<Identifier, FunctionAnalysis>,
     pub classes: HashMap<Identifier, ClassAnalysis>,
     pub models: Arc<ModelContext>,
+    pub symbol_table: Arc<SymbolTable>,
 }
 
 fn vars_to_inlay(vars: &HashSet<Variable>) -> Option<String> {
@@ -64,52 +66,89 @@ fn vars_to_inlay(vars: &HashSet<Variable>) -> Option<String> {
 }
 
 impl GlobalAnalysis {
-    pub fn new(funcs: &Vec<Function>) -> Self {
+    pub fn new(symbol_table: &SymbolTable, functions: &Vec<Function>) -> Self {
+        let symbol_table = Arc::new(symbol_table.clone());
         Self {
             functions: HashMap::new(),
             classes: HashMap::new(),
-            models: Arc::new(ModelContext::new(funcs)),
+            models: Arc::new(ModelContext::new(functions, &symbol_table)),
+            symbol_table,
         }
     }
 
     pub fn analyze_func(&mut self, func: &Function) -> Result<()> {
-        let name = func.identifier.clone();
+        let local_name = resolve(func.identifier);
+        let canonical = self
+            .symbol_table
+            .resolve(&func.file_path, &local_name)
+            .cloned()
+            .unwrap_or(local_name);
+        let canonical_id = intern(&canonical);
+
         let mut func_analysis = FunctionAnalysis::new(func, None);
         func_analysis.analyze_func(func, self)?;
-        self.functions.insert(name, func_analysis);
+        self.functions.insert(canonical_id, func_analysis);
         Ok(())
     }
 
     pub fn analyze_class(&mut self, class: &Class) -> Result<()> {
-        let name = class.identifier.clone();
+        let local_name = resolve(class.identifier);
+        let canonical = self
+            .symbol_table
+            .resolve(&class.file_path, &local_name)
+            .cloned()
+            .unwrap_or(local_name);
+        let canonical_id = intern(&canonical);
+
         let class_analysis = analyze_class(class, self)?;
-        self.classes.insert(name, class_analysis);
+        self.classes.insert(canonical_id, class_analysis);
         Ok(())
     }
 
     /// Format the entire analysis result as a string, including both classes and functions.
-    pub fn format_all(&self, prog: &Program) -> String {
+    pub fn format_all(&self, project: &Project) -> String {
         let mut output = String::new();
 
+        println!("format_all");
+
+        // Collect all classes and functions from all files
+        let all_classes: Vec<&Class> = project.files.iter().flat_map(|f| &f.classes).collect();
+        let all_functions: Vec<&Function> =
+            project.files.iter().flat_map(|f| &f.functions).collect();
+
         // Print classes first
-        for (name, facts) in self
+        for (canonical_id, facts) in self
             .classes
             .iter()
             .sorted_by(|(a, _), (b, _)| resolve(**a).cmp(&resolve(**b)))
         {
-            if let Some(class) = prog.classes.iter().find(|c| c.identifier == *name) {
+            let canonical_path = resolve(*canonical_id);
+            if let Some(class) = all_classes.iter().find(|c| {
+                let local = resolve(c.identifier);
+                canonical_path.ends_with(&local) || canonical_path == local
+            }) {
                 output.push_str(&class_with_inferred_shapes_to_string(class, facts, None));
                 output.push_str("\n\n");
             }
         }
 
         // Then print functions
-        for (name, facts) in self
+        for (canonical_id, facts) in self
             .functions
             .iter()
             .sorted_by(|(a, _), (b, _)| resolve(**a).cmp(&resolve(**b)))
         {
-            if let Some(func) = prog.functions.iter().find(|f| f.identifier == *name) {
+            let canonical_path = resolve(*canonical_id);
+            if let Some(func) = all_functions.iter().find(|f| {
+                let local = resolve(f.identifier);
+                // Resolve the function's canonical path using the symbol table
+                let func_canonical = self
+                    .symbol_table
+                    .resolve(&f.file_path, &local)
+                    .cloned()
+                    .unwrap_or(local);
+                func_canonical == canonical_path
+            }) {
                 output.push_str(&function_with_inferred_shapes_to_string(func, facts, None));
                 output.push_str("\n\n");
             }
@@ -228,7 +267,9 @@ impl FunctionAnalysis {
             ),
             ExprKind::Constant(c) => self.eval_constant(c),
             ExprKind::Ident(_name) => self.eval_ident(domain, expr),
-            ExprKind::Attribute { value, attr } => self.eval_attribute(domain, value, attr, expr),
+            ExprKind::Attribute { value, attr } => {
+                self.eval_attribute(domain, value, attr, expr, global)
+            }
             ExprKind::Index { receiver, index } => {
                 self.eval_index(domain, receiver, index, expr.span, global)
             }
@@ -320,12 +361,14 @@ impl FunctionAnalysis {
     }
 
     /// Attribute lookup
+    /// doesn't include method calls, as eval_call doesn't recur there.
     fn eval_attribute(
         &mut self,
         domain: &AnalysisDomain,
         value: &Expr,
         attr: &Identifier,
         _expr: &Expr,
+        _global: &GlobalAnalysis, // will be useful to access the symbol table when we handle cross-module variable lookup
     ) -> Result<HashSet<Variable>> {
         // Special case for .shape attribute
         if resolve(*attr) == "shape" {
@@ -435,7 +478,16 @@ impl FunctionAnalysis {
     ) -> Result<HashSet<Variable>> {
         let mut out_vars = HashSet::new();
 
-        if let Some(class_analysis) = global.classes.get(&class_id) {
+        // Resolve class_id to canonical path
+        let local_name = resolve(class_id);
+        let canonical = global
+            .symbol_table
+            .resolve(&self.function.file_path, &local_name)
+            .cloned()
+            .unwrap_or(local_name);
+        let canonical_id = intern(&canonical);
+
+        if let Some(class_analysis) = global.classes.get(&canonical_id) {
             let args_products = args_sets.iter().multi_cartesian_product();
             let kw_names = kwargs_sets.iter().map(|(n, _)| *n);
             let kwargs_products: Vec<HashMap<Identifier, _>> = kwargs_sets
@@ -559,7 +611,7 @@ impl FunctionAnalysis {
         let mut out_vars = HashSet::new();
 
         // Resolve function name - for now assume it's an ident or attribute chain
-        let func_name = self.expr_to_dot_string(function);
+        let func_name = self.expr_to_dot_string(function, global);
 
         let args_products = args_sets.iter().multi_cartesian_product();
         let kw_names = kwargs_sets.iter().map(|(n, _)| *n);
@@ -617,11 +669,25 @@ impl FunctionAnalysis {
     }
 
     /// Convert an Expr to a dot-separated string (e.g., "torch.nn.functional.relu")
-    fn expr_to_dot_string(&self, expr: &Expr) -> String {
+    /// Uses SymbolTable to resolve identifiers to canonical paths when available
+    fn expr_to_dot_string(&self, expr: &Expr, global: &GlobalAnalysis) -> String {
         match &expr.kind {
-            ExprKind::Ident(name) => resolve(*name),
+            ExprKind::Ident(name) => {
+                let local_name = resolve(*name);
+                if let Some(canonical) = global
+                    .symbol_table
+                    .resolve(&self.function.file_path, &local_name)
+                {
+                    return canonical.clone();
+                }
+                local_name
+            }
             ExprKind::Attribute { value, attr } => {
-                format!("{}.{}", self.expr_to_dot_string(value), resolve(*attr))
+                format!(
+                    "{}.{}",
+                    self.expr_to_dot_string(value, global),
+                    resolve(*attr)
+                )
             }
             _ => String::new(),
         }
@@ -1254,13 +1320,27 @@ impl ClassAnalysis {
     }
 }
 
-pub fn analyze(prog: Program) -> Result<GlobalAnalysis> {
-    let mut global_analysis = GlobalAnalysis::new(&prog.functions);
-    for class in prog.classes {
-        global_analysis.analyze_class(&class)?;
+pub fn analyze(project: Project, symbol_table: &SymbolTable) -> Result<GlobalAnalysis> {
+    // Collect all functions/classes from all files (clone to get owned values)
+    let all_functions: Vec<Function> = project
+        .files
+        .iter()
+        .flat_map(|f| f.functions.clone())
+        .collect();
+    let all_classes: Vec<&Class> = project.files.iter().flat_map(|f| &f.classes).collect();
+
+    // Create GlobalAnalysis with all functions so ModelContext can build signature models
+    let mut global_analysis = GlobalAnalysis::new(symbol_table, &all_functions);
+
+    // Analyze classes
+    for class in all_classes {
+        global_analysis.analyze_class(class)?;
     }
-    for func in prog.functions {
-        global_analysis.analyze_func(&func)?;
+
+    // Analyze functions
+    for func in &all_functions {
+        global_analysis.analyze_func(func)?;
     }
+
     Ok(global_analysis)
 }

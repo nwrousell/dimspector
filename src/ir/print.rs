@@ -4,11 +4,20 @@ use crate::ir::types::{Constant, DimRange, Location, Slice, resolve};
 use crate::utils::{indent, write_comma_separated};
 
 use crate::ir::{
-    Class, Function, Program,
+    Class, File, Function, Project,
     types::{BasicBlock, BasicBlockIdx, Binop, Expr, ExprKind, Parameter, Statement, Terminator},
 };
 
-impl fmt::Display for Program {
+impl fmt::Display for Project {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for file in &self.files {
+            write!(f, "{file}\n\n")?;
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Display for File {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for func in &self.functions {
             write!(f, "{func}\n\n")?;

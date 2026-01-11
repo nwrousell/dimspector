@@ -15,8 +15,7 @@ use ruff_python_ast::{
     StmtWith, UnaryOp,
 };
 use ruff_text_size::TextRange;
-use ty_project::ProjectDatabase;
-use ty_python_semantic::{HasType, SemanticModel};
+use std::path::PathBuf;
 
 use crate::{
     analysis::{DimKind, DimVar},
@@ -27,35 +26,34 @@ use crate::{
     ir::types::{BasicBlock, BasicBlockIdx, Cfg, Expr, PartialCfg, Statement, Terminator},
 };
 
-pub fn lower_class<'db>(
+pub fn lower_class(
     class_def: &StmtClassDef,
-    db: &'db ProjectDatabase,
-    model: &'db SemanticModel<'db>,
     class_names: &std::collections::HashSet<Identifier>,
+    file_path: &PathBuf,
 ) -> Result<Class> {
     let mut methods = HashMap::new();
 
     // Process methods: iterate through body to find StmtFunctionDef
     for stmt in &class_def.body {
         if let ASTStmt::FunctionDef(method) = stmt {
-            let lowered_method = lower_func(method, db, model, class_names)?;
+            let lowered_method = lower_func(method, class_names, file_path)?;
             methods.insert(lowered_method.identifier, lowered_method);
         }
     }
 
     Ok(Class {
         identifier: intern(class_def.name.as_str()),
+        file_path: file_path.clone(),
         methods,
     })
 }
 
-pub fn lower_func<'db>(
+pub fn lower_func(
     func: &StmtFunctionDef,
-    db: &'db ProjectDatabase,
-    model: &'db SemanticModel<'db>,
     class_names: &std::collections::HashSet<Identifier>,
+    file_path: &PathBuf,
 ) -> Result<Function> {
-    let mut lowerer = LowerBody::new(func, db, model, class_names);
+    let mut lowerer = LowerBody::new(func, class_names);
 
     lowerer.lower_func_body(&func.body)?;
 
@@ -94,13 +92,14 @@ pub fn lower_func<'db>(
 
     Ok(Function::new(
         intern(func.name.as_str()),
+        file_path.clone(),
         cfg,
         lowerer.params,
         lowerer.returns,
     ))
 }
 
-struct LowerBody<'db> {
+struct LowerBody {
     pub params: Vec<(crate::ir::Identifier, Option<Variable>)>,
     pub returns: Option<Vec<Variable>>,
     pub graph: PartialCfg, // might need to turn this into DiGraph<Option<BasicBlock>, ()>
@@ -108,21 +107,16 @@ struct LowerBody<'db> {
     pub cur_loc: Option<BasicBlockIdx>,
     pub start_block: BasicBlockIdx,
 
-    pub _db: &'db ProjectDatabase,
-    /// semantic model for type inference
-    pub model: &'db SemanticModel<'db>,
     /// Set of class identifiers for callable type inference heuristic
-    pub class_names: &'db std::collections::HashSet<Identifier>,
+    pub class_names: std::collections::HashSet<Identifier>,
     /// Mapping from instance identifiers to their class identifiers
     pub instance_identifiers: std::collections::HashMap<Identifier, Identifier>,
 }
 
-impl<'db> LowerBody<'db> {
+impl LowerBody {
     fn new(
         func: &StmtFunctionDef,
-        db: &'db ProjectDatabase,
-        model: &'db SemanticModel<'db>,
-        class_names: &'db std::collections::HashSet<Identifier>,
+        class_names: &std::collections::HashSet<Identifier>,
     ) -> Self {
         let mut graph = PartialCfg::new();
         let start_block = BasicBlockIdx::from(graph.add_node(None));
@@ -174,9 +168,7 @@ impl<'db> LowerBody<'db> {
             cur_block: Vec::new(),
             cur_loc: Some(start_block),
             start_block,
-            _db: db,
-            model,
-            class_names,
+            class_names: class_names.clone(),
             instance_identifiers: std::collections::HashMap::new(),
         }
     }

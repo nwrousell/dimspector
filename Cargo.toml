@@ -26,15 +26,7 @@ tower-lsp = "0.20.0"
 ruff_python_parser = { git = "https://github.com/astral-sh/ruff.git", rev = "4c4e652b38f3e9711eb5532aabf2571309d73900", package = "ruff_python_parser" }
 ruff_python_ast = { git = "https://github.com/astral-sh/ruff.git", rev = "4c4e652b38f3e9711eb5532aabf2571309d73900", package = "ruff_python_ast" }
 ruff_text_size = { git = "https://github.com/astral-sh/ruff.git", rev = "4c4e652b38f3e9711eb5532aabf2571309d73900", package = "ruff_text_size" }
-ty_python_semantic = { git = "https://github.com/astral-sh/ruff.git", rev = "4c4e652b38f3e9711eb5532aabf2571309d73900", package = "ty_python_semantic" }
-ruff_db = { git = "https://github.com/astral-sh/ruff.git", rev = "4c4e652b38f3e9711eb5532aabf2571309d73900", package = "ruff_db", features = [
-    "os",
-] }
-ty_module_resolver = { git = "https://github.com/astral-sh/ruff.git", rev = "4c4e652b38f3e9711eb5532aabf2571309d73900", package = "ty_module_resolver" }
-ty_project = { git = "https://github.com/astral-sh/ruff.git", rev = "4c4e652b38f3e9711eb5532aabf2571309d73900", package = "ty_project", features = [
-    "testing",
-] }
 string-interner = "0.18"
+walkdir = "2.5"
 
 [dev-dependencies]
-walkdir = "2.5"

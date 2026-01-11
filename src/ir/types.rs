@@ -36,7 +36,13 @@ pub fn resolve(sym: Identifier) -> String {
 }
 
 #[derive(Clone, Debug)]
-pub struct Program {
+pub struct Project {
+    pub files: Vec<File>,
+}
+
+#[derive(Clone, Debug)]
+pub struct File {
+    pub path: std::path::PathBuf,
     pub functions: Vec<Function>,
     pub classes: Vec<Class>,
 }
@@ -44,6 +50,7 @@ pub struct Program {
 #[derive(Clone, Debug)]
 pub struct Class {
     pub identifier: Identifier,
+    pub file_path: std::path::PathBuf,
     pub methods: HashMap<Identifier, Function>,
 }
 
@@ -81,6 +88,7 @@ impl Location {
 #[derive(Clone, Debug)]
 pub struct Function {
     pub identifier: Identifier,
+    pub file_path: std::path::PathBuf,
     pub cfg: Cfg,
     pub params: Vec<Parameter>,
     pub returns: Option<Vec<Variable>>,
@@ -100,6 +108,7 @@ impl Parameter {
 impl Function {
     pub fn new(
         identifier: Identifier,
+        file_path: std::path::PathBuf,
         cfg: Cfg,
         params: Vec<(Identifier, Option<Variable>)>,
         returns: Option<Vec<Variable>>,
@@ -125,6 +134,7 @@ impl Function {
 
         Self {
             identifier,
+            file_path,
             cfg,
             locations,
             rpo,
