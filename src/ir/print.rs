@@ -153,6 +153,11 @@ impl fmt::Display for Expr {
                 write_comma_separated(f, exprs)?;
                 write!(f, ")")
             }
+            ExprKind::List(exprs) => {
+                write!(f, "[")?;
+                write_comma_separated(f, exprs)?;
+                write!(f, "]")
+            }
         }
     }
 }

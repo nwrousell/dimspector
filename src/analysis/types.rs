@@ -10,6 +10,7 @@ pub enum Variable {
     Tuple(Vec<Variable>),
     None,
     ClassInstance(ClassInstance),
+    Collection(Collection),
 }
 
 /// Represents a class instance with concrete dimension variable substitutions.
@@ -21,6 +22,24 @@ pub struct ClassInstance {
     pub substitutions: BTreeMap<DimVar, DimVar>,
 }
 
+// only modeling either ints or strings as possible keys (ints only applying for lists)
+#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CollectionKey {
+    Int(i64),
+    Str(String),
+}
+
+impl From<i64> for CollectionKey {
+    fn from(i: i64) -> Self {
+        CollectionKey::Int(i)
+    }
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct Collection {
+    pub elements: BTreeMap<CollectionKey, Variable>,
+}
+
 impl Variable {
     pub fn as_dimvar(&self) -> Option<&DimVar> {
         match self {
@@ -30,6 +49,7 @@ impl Variable {
             Variable::Tuple(_) => None,
             Variable::None => None,
             Variable::ClassInstance(_) => None,
+            Variable::Collection(_) => None,
         }
     }
 
@@ -64,6 +84,7 @@ impl Variable {
             }
             Variable::None => None,
             Variable::ClassInstance(_) => None,
+            Variable::Collection(_) => None,
         }
     }
 
@@ -90,6 +111,7 @@ impl Variable {
             }
             Variable::None => None,
             Variable::ClassInstance(_) => None,
+            Variable::Collection(_) => None,
         }
     }
 

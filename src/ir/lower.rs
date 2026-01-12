@@ -766,7 +766,7 @@ impl LowerBody {
                     .map(|e| self.lower_expr(e))
                     .collect::<Result<Vec<Expr>>>()?;
 
-                Ok(Expr::tuple(elts, range, ty))
+                Ok(Expr::list(elts, range, ty))
             }
 
             _ => todo!("unhandled expr: {expr:#?}"),

@@ -278,10 +278,10 @@ impl DimVar {
 
     pub fn substitute(&self, map: &HashMap<String, DimVar>) -> Result<DimVar> {
         Ok(match self.kind() {
-            DimKind::Named(name) => map
-                .get(&name)
-                .cloned()
-                .ok_or_else(|| anyhow!("can't resolve callee dim var {}", name))?,
+            // TODO: FIX THIS URGENTLY, making this lenient so classes methods
+            // can be ok but will actually want to know in the future if tbings
+            // can't be resolved
+            DimKind::Named(name) => map.get(&name).cloned().unwrap_or_else(|| self.clone()),
             DimKind::Mul { left, right } => left.substitute(map)? * right.substitute(map)?,
             DimKind::Add { left, right } => left.substitute(map)? + right.substitute(map)?,
             DimKind::Concrete(_) => self.clone(),

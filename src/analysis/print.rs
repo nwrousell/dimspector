@@ -47,6 +47,22 @@ impl fmt::Display for Variable {
                 }
                 Ok(())
             }
+            Variable::Collection(coll) => {
+                use super::types::CollectionKey;
+                write!(f, "{{")?;
+                let mut first = true;
+                for (key, val) in &coll.elements {
+                    if !first {
+                        write!(f, ", ")?;
+                    }
+                    match key {
+                        CollectionKey::Int(i) => write!(f, "{}: {}", i, val)?,
+                        CollectionKey::Str(s) => write!(f, "\"{}\": {}", s, val)?,
+                    }
+                    first = false;
+                }
+                write!(f, "}}")
+            }
         }
     }
 }

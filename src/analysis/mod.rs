@@ -14,7 +14,7 @@ pub use types::{Shape, Variable};
 
 pub use crate::analysis::dimvars::{DimKind, DimVar};
 use crate::analysis::models::{Model, ModelContext, SignatureModel};
-use crate::analysis::types::{ClassInstance, DimSlice};
+use crate::analysis::types::{ClassInstance, Collection, CollectionKey, DimSlice};
 use crate::ir::types::{Binop, Constant, ExprKind, Location, Slice, Type};
 use crate::ir::{Class, File, Function, Project};
 use crate::ir::{Expr, Identifier, Parameter, Statement, Terminator, intern, resolve};
@@ -100,7 +100,7 @@ impl GlobalAnalysis {
             .unwrap_or(local_name);
         let canonical_id = intern(&canonical);
 
-        let class_analysis = analyze_class(class, self)?;
+        let class_analysis = analyze_class(class, canonical_id, self)?;
         self.classes.insert(canonical_id, class_analysis);
         Ok(())
     }
@@ -274,6 +274,7 @@ impl FunctionAnalysis {
                 self.eval_index(domain, receiver, index, expr.span, global)
             }
             ExprKind::Tuple(exprs) => self.eval_tuple(domain, exprs, global),
+            ExprKind::List(exprs) => self.eval_list(domain, exprs, global),
         }
     }
 
@@ -438,6 +439,32 @@ impl FunctionAnalysis {
         Ok(HashSet::from_iter(products.map(Variable::Tuple)))
     }
 
+    fn eval_list(
+        &mut self,
+        domain: &AnalysisDomain,
+        exprs: &[Expr],
+        global: &GlobalAnalysis,
+    ) -> Result<HashSet<Variable>> {
+        let results = exprs
+            .iter()
+            .map(|e| self.eval_expr(domain, e, global))
+            .collect::<Result<Vec<HashSet<Variable>>>>()?;
+
+        let products = results
+            .iter()
+            .map(|set| set.iter().cloned())
+            .multi_cartesian_product();
+
+        Ok(HashSet::from_iter(products.map(|vars| {
+            let elements: BTreeMap<CollectionKey, Variable> = vars
+                .into_iter()
+                .enumerate()
+                .map(|(i, v)| (CollectionKey::Int(i as i64), v))
+                .collect();
+            Variable::Collection(Collection { elements })
+        })))
+    }
+
     /// Enumerates possible arg/kwargs and dispatches call to correct model.
     fn eval_call(
         &mut self,
@@ -465,7 +492,7 @@ impl FunctionAnalysis {
                 span,
                 global,
             ),
-            _ => self.eval_function(function, &args_sets, &kwargs_sets, span, global),
+            _ => self.eval_function(function, &args_sets, &kwargs_sets, span, global, domain),
         }
     }
 
@@ -607,10 +634,77 @@ impl FunctionAnalysis {
         kwargs_sets: &[(Identifier, HashSet<Variable>)],
         span: SourceSpan,
         global: &GlobalAnalysis,
+        domain: &AnalysisDomain,
     ) -> Result<HashSet<Variable>> {
         let mut out_vars = HashSet::new();
 
-        // Resolve function name - for now assume it's an ident or attribute chain
+        if let ExprKind::Attribute { value, attr } = &function.kind {
+            let receiver_vars = self.eval_expr(domain, value, global)?;
+
+            let class_instances: Vec<_> = receiver_vars
+                .iter()
+                .filter_map(|v| {
+                    if let Variable::ClassInstance(inst) = v {
+                        Some(inst)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            if !class_instances.is_empty() {
+                let method_name = *attr;
+                let method_args_products: Vec<Vec<&Variable>> =
+                    args_sets.iter().multi_cartesian_product().collect();
+                let method_kw_names = kwargs_sets.iter().map(|(n, _)| *n);
+                let method_kwargs_products: Vec<HashMap<Identifier, _>> = kwargs_sets
+                    .iter()
+                    .map(|(_, vars)| vars)
+                    .multi_cartesian_product()
+                    .map(|vars| method_kw_names.clone().zip(vars).collect())
+                    .collect();
+
+                for instance in class_instances {
+                    if let Some(class_analysis) = global.classes.get(&instance.class_id) {
+                        if let Ok(signature_model) =
+                            class_analysis.get_method_signature(method_name, instance)
+                        {
+                            for (args_refs, kwargs_ref) in method_args_products
+                                .iter()
+                                .cartesian_product(method_kwargs_products.iter())
+                            {
+                                let args: Vec<&Variable> = args_refs.iter().map(|v| *v).collect();
+                                let kwargs: HashMap<Identifier, &Variable> =
+                                    kwargs_ref.iter().map(|(k, v)| (*k, *v)).collect();
+
+                                let any_top = args.iter().any(|v| matches!(**v, Variable::Top))
+                                    || kwargs.iter().any(|(_, v)| matches!(**v, Variable::Top));
+                                if any_top {
+                                    out_vars.insert(Variable::Top);
+                                } else {
+                                    let result_shape = signature_model.infer(args, kwargs, span)?;
+                                    out_vars.insert(Variable::Tensor(result_shape));
+                                }
+                            }
+                        } else {
+                            out_vars.insert(Variable::Top);
+                        }
+                    } else {
+                        out_vars.insert(Variable::Top);
+                    }
+                }
+
+                if receiver_vars
+                    .iter()
+                    .any(|v| !matches!(v, Variable::ClassInstance(_)))
+                {
+                    out_vars.insert(Variable::Top);
+                }
+
+                return Ok(out_vars);
+            }
+        }
+
         let func_name = self.expr_to_dot_string(function, global);
 
         let args_products = args_sets.iter().multi_cartesian_product();
@@ -732,6 +826,13 @@ impl FunctionAnalysis {
                 Variable::DimVar(_) => (),
                 Variable::None => (),
                 Variable::ClassInstance(_) => {}
+                Variable::Collection(col) => {
+                    if let Some(result) = self.eval_collection_index(col, &index) {
+                        set.insert(result);
+                    } else {
+                        set.insert(Variable::Top);
+                    }
+                }
             }
         }
 
@@ -805,6 +906,24 @@ impl FunctionAnalysis {
                 })
             })
             .collect()
+    }
+
+    fn eval_collection_index(
+        &self,
+        col: &Collection,
+        index_or_slices: &[&Either<Variable, DimSlice>],
+    ) -> Option<Variable> {
+        assert!(index_or_slices.len() == 1);
+        match index_or_slices.first().unwrap() {
+            Either::Left(var) => var
+                .as_concrete_dimvar()
+                .and_then(|i| col.elements.get(&i.into()).cloned())
+                .or(Some(Variable::Top)),
+            Either::Right(_) => {
+                // TODO: deal with potential slicing
+                Some(Variable::Top)
+            }
+        }
     }
 
     /// Given a sequence of DimVars, apply a sequence of indices/slices.
@@ -1017,7 +1136,11 @@ pub struct ClassAnalysis {
 /// This function:
 /// 1. Analyzes the `__init__` method as a special case to extract attribute shapes
 /// 2. Analyzes other methods for consistency checking
-pub fn analyze_class(class: &Class, global: &GlobalAnalysis) -> Result<ClassAnalysis> {
+pub fn analyze_class(
+    class: &Class,
+    canonical_id: Identifier,
+    global: &GlobalAnalysis,
+) -> Result<ClassAnalysis> {
     let init_method_name = intern("__init__");
 
     // Find the __init__ method
@@ -1081,7 +1204,7 @@ pub fn analyze_class(class: &Class, global: &GlobalAnalysis) -> Result<ClassAnal
     }
 
     Ok(ClassAnalysis {
-        id: class.identifier,
+        id: canonical_id,
         attributes,
         methods,
     })
@@ -1272,8 +1395,6 @@ impl ClassAnalysis {
     fn substitute_variable(var: &Variable, substitutions: &BTreeMap<DimVar, DimVar>) -> Variable {
         match var {
             Variable::DimVar(dv) => {
-                // Substitute the DimVar using the map
-                // Convert BTreeMap<DimVar, DimVar> to HashMap<String, DimVar> for DimVar::substitute
                 let mut string_map = HashMap::new();
                 for (param_dv, concrete_dv) in substitutions {
                     if let DimKind::Named(name) = param_dv.kind() {
@@ -1287,7 +1408,6 @@ impl ClassAnalysis {
                 }
             }
             Variable::Tensor(shape) => {
-                // Substitute DimVars in the shape
                 let substituted_dims: Vec<DimVar> = shape
                     .0
                     .iter()
@@ -1311,9 +1431,39 @@ impl ClassAnalysis {
                     .collect();
                 Variable::Tuple(substituted_vars)
             }
-            Variable::ClassInstance(_) => {
-                // TODO: Handle nested class instances
-                var.clone()
+            Variable::ClassInstance(inst) => {
+                let mut string_map = HashMap::new();
+                for (param_dv, concrete_dv) in substitutions {
+                    if let DimKind::Named(name) = param_dv.kind() {
+                        string_map.insert(name, concrete_dv.clone());
+                    }
+                }
+
+                let new_subs: BTreeMap<DimVar, DimVar> = inst
+                    .substitutions
+                    .iter()
+                    .map(|(param_dv, concrete_dv)| {
+                        let substituted = concrete_dv
+                            .substitute(&string_map)
+                            .unwrap_or_else(|_| concrete_dv.clone());
+                        (param_dv.clone(), substituted)
+                    })
+                    .collect();
+
+                Variable::ClassInstance(ClassInstance {
+                    class_id: inst.class_id,
+                    substitutions: new_subs,
+                })
+            }
+            Variable::Collection(col) => {
+                let substituted_elements: BTreeMap<CollectionKey, Variable> = col
+                    .elements
+                    .iter()
+                    .map(|(k, v)| (k.clone(), Self::substitute_variable(v, substitutions)))
+                    .collect();
+                Variable::Collection(Collection {
+                    elements: substituted_elements,
+                })
             }
             Variable::Top | Variable::None => var.clone(),
         }

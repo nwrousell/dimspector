@@ -709,8 +709,9 @@ pub struct TransposeModel;
 static TRANSPOSE_SIGNATURE: LazyLock<Signature> = LazyLock::new(|| {
     Signature::FixedArity(vec![
         (intern("input"), None),
-        (intern("dim0"), None),
-        (intern("dim1"), None),
+        // Default to swapping dims 0 and 1 for 2D tensor transpose shorthand
+        (intern("dim0"), Some(Variable::DimVar(DimVar::from(0)))),
+        (intern("dim1"), Some(Variable::DimVar(DimVar::from(1)))),
     ])
 });
 
