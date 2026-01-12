@@ -26,64 +26,74 @@ pub enum Import {
 
 pub struct ParsedFile {
     pub path: PathBuf,
+    pub source: String,
     pub functions: Vec<StmtFunctionDef>,
     pub classes: Vec<StmtClassDef>,
     pub imports: Vec<Import>,
 }
 
-pub fn parse_file(path: &PathBuf) -> Result<ParsedFile> {
-    let content = std::fs::read_to_string(path)?;
-    let parsed = parse_module(&content)?;
+impl ParsedFile {
+    /// Parse a file from disk
+    pub fn from_path(path: &PathBuf) -> Result<Self> {
+        let content = std::fs::read_to_string(path)?;
+        Self::from_content(path, &content)
+    }
 
-    let mut functions = Vec::new();
-    let mut classes = Vec::new();
-    let mut imports = Vec::new();
+    /// Parse a file from content string
+    pub fn from_content(path: &PathBuf, content: &str) -> Result<Self> {
+        let parsed = parse_module(content)?;
 
-    for stmt in parsed.syntax().body.iter() {
-        match stmt {
-            ruff_python_ast::Stmt::FunctionDef(f) => functions.push(f.clone()),
-            ruff_python_ast::Stmt::ClassDef(c) => classes.push(c.clone()),
-            ruff_python_ast::Stmt::Import(i) => {
-                let names: Vec<String> = i
-                    .names
-                    .iter()
-                    .map(|alias| alias.name.as_str().to_string())
-                    .collect();
-                imports.push(Import::Import { names });
-            }
-            ruff_python_ast::Stmt::ImportFrom(i) => {
-                if let Some(module) = &i.module {
-                    let module_str = module.as_str().to_string();
+        let mut functions = Vec::new();
+        let mut classes = Vec::new();
+        let mut imports = Vec::new();
+
+        for stmt in parsed.syntax().body.iter() {
+            match stmt {
+                ruff_python_ast::Stmt::FunctionDef(f) => functions.push(f.clone()),
+                ruff_python_ast::Stmt::ClassDef(c) => classes.push(c.clone()),
+                ruff_python_ast::Stmt::Import(i) => {
                     let names: Vec<String> = i
                         .names
                         .iter()
                         .map(|alias| alias.name.as_str().to_string())
                         .collect();
+                    imports.push(Import::Import { names });
+                }
+                ruff_python_ast::Stmt::ImportFrom(i) => {
+                    if let Some(module) = &i.module {
+                        let module_str = module.as_str().to_string();
+                        let names: Vec<String> = i
+                            .names
+                            .iter()
+                            .map(|alias| alias.name.as_str().to_string())
+                            .collect();
 
-                    if i.level > 0 {
-                        imports.push(Import::ImportFromRelative {
-                            level: i.level as usize,
-                            module: Some(module_str),
-                            names,
-                        });
-                    } else {
-                        imports.push(Import::ImportFrom {
-                            module: module_str,
-                            names,
-                        });
+                        if i.level > 0 {
+                            imports.push(Import::ImportFromRelative {
+                                level: i.level as usize,
+                                module: Some(module_str),
+                                names,
+                            });
+                        } else {
+                            imports.push(Import::ImportFrom {
+                                module: module_str,
+                                names,
+                            });
+                        }
                     }
                 }
+                _ => {}
             }
-            _ => {}
         }
-    }
 
-    Ok(ParsedFile {
-        path: path.clone(),
-        functions,
-        classes,
-        imports,
-    })
+        Ok(Self {
+            path: path.clone(),
+            source: content.to_string(),
+            functions,
+            classes,
+            imports,
+        })
+    }
 }
 
 pub struct ParsedProject {
@@ -91,28 +101,49 @@ pub struct ParsedProject {
     pub files: Vec<ParsedFile>,
 }
 
-pub fn parse_project(project_root: &Path) -> Result<ParsedProject> {
-    let mut files = Vec::new();
+impl ParsedProject {
+    /// Parse an entire project from a project root directory
+    pub fn from_project_root(project_root: &Path) -> Result<Self> {
+        let mut files = Vec::new();
 
-    // Discover all Python files
-    for entry in WalkDir::new(project_root)
-        .follow_links(true)
-        .into_iter()
-        .filter_entry(|e| !e.path().starts_with("."))
-    {
-        let entry = entry?;
-        let path = entry.path();
+        // Discover all Python files
+        for entry in WalkDir::new(project_root)
+            .follow_links(true)
+            .into_iter()
+            .filter_entry(|e| !e.path().starts_with("."))
+        {
+            let entry = entry?;
+            let path = entry.path();
 
-        if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("py") {
-            let parsed = parse_file(&path.to_path_buf())?;
-            files.push(parsed);
+            if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("py") {
+                log::info!("Found Python file: {}", path.display());
+                let parsed = ParsedFile::from_path(&path.to_path_buf())?;
+                files.push(parsed);
+            }
         }
+
+        log::info!("Collected {} Python files from project root", files.len());
+
+        Ok(Self {
+            project_root: project_root.to_path_buf(),
+            files,
+        })
     }
 
-    Ok(ParsedProject {
-        project_root: project_root.to_path_buf(),
-        files,
-    })
+    /// Re-parse a single file and update it in the project
+    pub fn update_file(&mut self, file_path: &Path, file_content: &str) -> Result<()> {
+        let file_path_buf = file_path.to_path_buf();
+        let parsed_file = ParsedFile::from_content(&file_path_buf, file_content)?;
+
+        // Replace the file if it exists, or add it
+        if let Some(idx) = self.files.iter().position(|f| f.path == file_path_buf) {
+            self.files[idx] = parsed_file;
+        } else {
+            self.files.push(parsed_file);
+        }
+
+        Ok(())
+    }
 }
 
 pub use symbols::SymbolTable;

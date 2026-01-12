@@ -30,13 +30,14 @@ pub fn lower_class(
     class_def: &StmtClassDef,
     class_names: &std::collections::HashSet<Identifier>,
     file_path: &PathBuf,
+    source: &str,
 ) -> Result<Class> {
     let mut methods = HashMap::new();
 
     // Process methods: iterate through body to find StmtFunctionDef
     for stmt in &class_def.body {
         if let ASTStmt::FunctionDef(method) = stmt {
-            let lowered_method = lower_func(method, class_names, file_path)?;
+            let lowered_method = lower_func(method, class_names, file_path, source)?;
             methods.insert(lowered_method.identifier, lowered_method);
         }
     }
@@ -52,8 +53,9 @@ pub fn lower_func(
     func: &StmtFunctionDef,
     class_names: &std::collections::HashSet<Identifier>,
     file_path: &PathBuf,
+    source: &str,
 ) -> Result<Function> {
-    let mut lowerer = LowerBody::new(func, class_names);
+    let mut lowerer = LowerBody::new(func, class_names, source);
 
     lowerer.lower_func_body(&func.body)?;
 
@@ -111,12 +113,15 @@ struct LowerBody {
     pub class_names: std::collections::HashSet<Identifier>,
     /// Mapping from instance identifiers to their class identifiers
     pub instance_identifiers: std::collections::HashMap<Identifier, Identifier>,
+    /// Source content for position calculation
+    pub source: String,
 }
 
 impl LowerBody {
     fn new(
         func: &StmtFunctionDef,
         class_names: &std::collections::HashSet<Identifier>,
+        source: &str,
     ) -> Self {
         let mut graph = PartialCfg::new();
         let start_block = BasicBlockIdx::from(graph.add_node(None));
@@ -170,7 +175,28 @@ impl LowerBody {
             start_block,
             class_names: class_names.clone(),
             instance_identifiers: std::collections::HashMap::new(),
+            source: source.to_string(),
         }
+    }
+
+    /// Convert a byte offset to an LSP Position (line, character)
+    fn byte_offset_to_position(&self, offset: usize) -> tower_lsp::lsp_types::Position {
+        let mut line = 0u32;
+        let mut character = 0u32;
+
+        for (idx, ch) in self.source.char_indices() {
+            if idx >= offset {
+                break;
+            }
+            if ch == '\n' {
+                line += 1;
+                character = 0;
+            } else {
+                character += 1;
+            }
+        }
+
+        tower_lsp::lsp_types::Position::new(line, character)
     }
 
     /// Extract shape string from type annotation.
@@ -358,10 +384,7 @@ impl LowerBody {
 
                     let value = self.lower_expr(value)?;
                     let assign_end_byte = target_range.end().to_usize();
-                    let assign_end = Some(tower_lsp::lsp_types::Position::new(
-                        0,
-                        assign_end_byte as u32,
-                    ));
+                    let assign_end = Some(self.byte_offset_to_position(assign_end_byte));
                     self.add_statement(value, Some(target_expr), range, assign_end);
                 }
             }
@@ -389,10 +412,7 @@ impl LowerBody {
                     Type::Other,
                 );
                 let assign_end_byte = target_range.end().to_usize();
-                let assign_end = Some(tower_lsp::lsp_types::Position::new(
-                    0,
-                    assign_end_byte as u32,
-                ));
+                let assign_end = Some(self.byte_offset_to_position(assign_end_byte));
                 self.add_statement(expr, Some(target_expr), range_converted, assign_end);
             }
 

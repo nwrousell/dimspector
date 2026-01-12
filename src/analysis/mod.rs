@@ -9,7 +9,6 @@ use std::sync::Arc;
 
 use itertools::{Either, Itertools};
 use miette::SourceSpan;
-use tower_lsp::lsp_types::InlayHint;
 pub use types::{Shape, Variable};
 
 pub use crate::analysis::dimvars::{DimKind, DimVar};
@@ -52,7 +51,7 @@ pub struct GlobalAnalysis {
     pub symbol_table: Arc<SymbolTable>,
 }
 
-fn vars_to_inlay(vars: &HashSet<Variable>) -> Option<String> {
+pub(crate) fn vars_to_inlay(vars: &HashSet<Variable>) -> Option<String> {
     if vars.len() == 0 {
         None
     } else if vars.len() == 1 {
@@ -86,9 +85,10 @@ impl GlobalAnalysis {
         let canonical_id = intern(&canonical);
 
         let mut func_analysis = FunctionAnalysis::new(func, None);
-        func_analysis.analyze_func(func, self)?;
+        let result = func_analysis.analyze_func(func, self);
+        // Insert the analysis even if it failed - partial state still has inlay hints before the error
         self.functions.insert(canonical_id, func_analysis);
-        Ok(())
+        result
     }
 
     pub fn analyze_class(&mut self, class: &Class) -> Result<()> {
@@ -103,6 +103,57 @@ impl GlobalAnalysis {
         let class_analysis = analyze_class(class, self)?;
         self.classes.insert(canonical_id, class_analysis);
         Ok(())
+    }
+
+    /// Analyze a file, collecting up to 1 error per function
+    pub fn analyze_file(
+        &mut self,
+        file: &File,
+        errors: &mut Vec<(std::path::PathBuf, ShapeError)>,
+    ) {
+        for class in &file.classes {
+            if let Err(e) = self.analyze_class(class) {
+                if let Some(shape_error) = e.downcast_ref::<ShapeError>() {
+                    errors.push((file.path.clone(), shape_error.clone()));
+                }
+            }
+        }
+
+        for func in &file.functions {
+            if let Err(e) = self.analyze_func(func) {
+                if let Some(shape_error) = e.downcast_ref::<ShapeError>() {
+                    errors.push((file.path.clone(), shape_error.clone()));
+                }
+            }
+        }
+    }
+
+    /// Analyze a project, collecting errors but continuing on failure
+    pub fn analyze_project(
+        &mut self,
+        project: &Project,
+        errors: &mut Vec<(std::path::PathBuf, ShapeError)>,
+    ) {
+        // Analyze all classes
+        let all_classes: Vec<&Class> = project.files.iter().flat_map(|f| &f.classes).collect();
+        for class in all_classes {
+            if let Err(e) = self.analyze_class(class) {
+                if let Some(shape_error) = e.downcast_ref::<ShapeError>() {
+                    errors.push((class.file_path.clone(), shape_error.clone()));
+                }
+            }
+        }
+
+        // Analyze all functions
+        let all_functions: Vec<&Function> =
+            project.files.iter().flat_map(|f| &f.functions).collect();
+        for func in all_functions {
+            if let Err(e) = self.analyze_func(func) {
+                if let Some(shape_error) = e.downcast_ref::<ShapeError>() {
+                    errors.push((func.file_path.clone(), shape_error.clone()));
+                }
+            }
+        }
     }
 
     /// Format the entire analysis result as a string, including both classes and functions.
@@ -155,44 +206,6 @@ impl GlobalAnalysis {
         }
 
         output
-    }
-
-    pub fn inlay_hints(&self) -> Vec<InlayHint> {
-        let mut hints = Vec::new();
-
-        for (_, func_analysis) in &self.functions {
-            let func = &func_analysis.function;
-            // for each location
-            for loc in &func.locations {
-                if let Either::Left(stmt) = func.instr(&loc) {
-                    if let Some(target) = &stmt.target
-                        && let Some(position) = stmt.assign_end
-                    {
-                        // Only show hints for Ident targets
-                        if let ExprKind::Ident(name) = &target.kind {
-                            if let Some(vars) =
-                                func_analysis.state.get(loc).and_then(|d| d.get(name))
-                            {
-                                if let Some(label) = vars_to_inlay(vars) {
-                                    hints.push(InlayHint {
-                                        position,
-                                        label: tower_lsp::lsp_types::InlayHintLabel::String(label),
-                                        kind: None,
-                                        text_edits: None,
-                                        tooltip: None,
-                                        padding_left: None,
-                                        padding_right: None,
-                                        data: None,
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        hints
     }
 }
 

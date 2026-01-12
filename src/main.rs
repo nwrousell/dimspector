@@ -1,10 +1,6 @@
 use clap::{Parser, Subcommand};
-use dimspector::{
-    analysis::{ShapeError, analyze},
-    ir, lsp,
-    parse::{ParsedProject, SymbolTable, parse_file, parse_project},
-};
-use miette::{MietteHandlerOpts, NamedSource, Result};
+use dimspector::{api::Dimspector, lsp};
+use miette::{MietteHandlerOpts, Result};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
@@ -56,58 +52,28 @@ fn check(path: PathBuf) -> anyhow::Result<()> {
 
     let abs_path = std::fs::canonicalize(&path)?;
 
-    // Determine if it's a single file or directory
-    let parsed_project =
-        if abs_path.is_file() && abs_path.extension().and_then(|s| s.to_str()) == Some("py") {
-            // Single file mode: parse just this file
-            let parsed_file = parse_file(&abs_path)?;
-            let project_root = abs_path.parent().unwrap_or(&abs_path);
-            ParsedProject {
-                project_root: project_root.to_path_buf(),
-                files: vec![parsed_file],
-            }
-        } else if abs_path.is_dir() {
-            // Directory mode: parse entire project
-            parse_project(&abs_path)?
-        } else {
-            anyhow::bail!("path must be a Python file (.py) or a directory");
-        };
-
-    log::debug!("Parsed project:\n{}", parsed_project);
-
-    // Build symbol table
-    let symbol_table = SymbolTable::build(&parsed_project);
-
-    // Lower to IR
-    let project_ir = ir::lower_project(&parsed_project)?;
-    log::debug!("IR:\n{}", project_ir);
-
-    // For error reporting, use the first file if single file mode, or the original path
-    let error_file = if abs_path.is_file() {
+    // Determine project root
+    let project_root = if abs_path.is_file() {
+        abs_path.parent().unwrap_or(&abs_path)
+    } else if abs_path.is_dir() {
         &abs_path
     } else {
-        // For directory mode, we'll use the first file for error context if needed
-        &parsed_project.files[0].path
+        anyhow::bail!("path must be a Python file (.py) or a directory");
     };
-    let file_contents = std::fs::read_to_string(error_file)?;
-    let named_source = NamedSource::new(error_file.display().to_string(), file_contents);
 
-    let res = analyze(project_ir.clone(), &symbol_table);
-    let res = match res {
-        Ok(res) => res,
-        Err(err) => {
-            if let Some(shape_error) = err.downcast_ref::<ShapeError>() {
-                use miette::Report;
-                let report = Report::new(shape_error.clone()).with_source_code(named_source);
-                eprintln!("{}", report);
-                anyhow::bail!("shape analysis failed");
-            } else {
-                return Err(err);
-            }
+    // Use Dimspector API to analyze the project
+    let (dimspector, errors) = Dimspector::from_project_root(project_root)?;
+
+    // Print errors if any
+    if !errors.is_empty() {
+        for (file_path, error) in &errors {
+            eprintln!("Error in {}: {:?}", file_path.display(), error);
         }
-    };
+        anyhow::bail!("shape analysis found {} errors", errors.len());
+    }
 
-    print!("{}", res.format_all(&project_ir));
+    // Print analysis results
+    print!("{}", dimspector.format_all());
 
     Ok(())
 }

@@ -183,7 +183,7 @@ impl ModelContext {
             "torch.sum" | "torch.mean" | "torch.prod" | "torch.amax" | "torch.amin"
             | "torch.std" | "torch.var" | "torch.logsumexp" | "torch.all" | "torch.any"
             | "torch.nansum" | "torch.nanmean" => Some(&self.torch.rdx),
-            "torch.concat" => Some(&self.torch.concat),
+            "torch.concat" | "torch.cat" => Some(&self.torch.concat),
             "torch.reshape" | "torch.view" => Some(&self.torch.reshape),
             "torch.transpose" => Some(&self.torch.tranpose),
             "torch.zeros" | "torch.ones" | "torch.empty" | "torch.rand" | "torch.randn"
