@@ -1,74 +1,25 @@
-# Dimspector
-An in-development tool to statically infer tensor shapes in PyTorch code. 
+<h1 align="center">dimspector</h1>
+A development tool that statically infers tensor shapes for PyTorch programs to provide shape hints and catch bugs. 
+
+  
+
+__This project is still largely in development; the set of Python/PyTorch programs dimspector can analyze is currently patchy but growing.__
+
+![VSCode Usage](assets/vscode_usage.png)
 
 ## Usage
 
-### Running
+### Running Analysis
+
 ```
-cargo run -- path/to/file.py
+# run standalone check on project or file
+cargo run -- check path/to/project/root
+
+# start LSP server
+cargo run -- server
 ```
 
 ### Running tests
 ```
 cargo insta test
 ```
-
-## Directory structure
-
-- `src/`
-    - `main.rs` - CLI
-    - `ast/` - mostly just wraps [rustpython parser](https://github.com/RustPython/Parser)
-    - `ir/` - types and lowering code for intermediate representation. 
-    - `analysis/`
-        - `mod.rs` - main analysis code
-        - `models.rs` - model definitions
-- `tests/programs/` - test files
-
-## Roadmap
-- [ ] more models
-    - [x] nn.functional (softmax, mean, sum)
-    - [x] passthrough
-    - [x] ones, ones_like and friends
-    - [x] change broadcast to model, use for torch.add, etc.
-    - [ ] unsqueeze / squeeze / expand_dims
-    - [x] reshape/transpose
-    - [ ] flatten/permute
-    - [ ] einsum, rearrange
-
-- [ ] DimVar folding / flow from .shape/.size
-    - [x] .shape - X.shape - special-cased in Path lookup
-    - [ ] .size() - special-cased in method lookup
-    - [x] binops between dimvars
-    - [x] tuples - Tuple(Vec<Variable>)
-    - [x] Dim Exprs
-- [ ] torch method calls
-- [ ] finish signature model
-    - [x] handle concrete args
-    - [ ] enforce existence of param with singleton named DimVar for each symbolic DimVar present in signature
-    - [ ] Generalize effect of function (optional/tuple/dimvar return type, maybe mutation?)
-- [ ] ellipsis
-
-- [ ] Usability improvements
-    - [x] miette for code context
-        - [ ] more provenance info 
-    - [ ] .pyi stubs
-    - [ ] LSP
-    - [ ] multiple files
-    - [ ] object orientation
-
-- [ ] method calls / side effects
-
-- [ ] Flesh out IR
-    - [x] Tuples
-    - [ ] `break`/`continue`
-    - [x] Lists?
-- [ ] Import resolution
-- [ ] if user has annotated var, check against our inference
-
-### Refactoring
-- [x] Make broadcast_resolve a Model
-- [ ] Set up interning and stop cloning everything everywhere
-- [ ] indexical over locations
-- [ ] modularize into smaller functions
-- [ ] switch to jaxtyping annotations 
-- [ ] doc comments on structs and functions
