@@ -110,19 +110,38 @@ impl ParsedProject {
         for entry in WalkDir::new(project_root)
             .follow_links(true)
             .into_iter()
-            .filter_entry(|e| !e.path().starts_with("."))
+            .filter_entry(|e| {
+                // Skip hidden directories (starting with .)
+                let path = e.path();
+                if path.is_dir() {
+                    // Check if directory name starts with . (like .venv, .git, etc.)
+                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                        if name.starts_with('.') {
+                            return false;
+                        }
+                    }
+                }
+                true
+            })
         {
             let entry = entry?;
             let path = entry.path();
 
             if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("py") {
-                log::info!("Found Python file: {}", path.display());
+                log::info!("Discovered Python file: {}", path.display());
                 let parsed = ParsedFile::from_path(&path.to_path_buf())?;
                 files.push(parsed);
             }
         }
 
-        log::info!("Collected {} Python files from project root", files.len());
+        log::info!(
+            "Collected {} Python files from project root: {}",
+            files.len(),
+            project_root.display()
+        );
+        for file in &files {
+            log::debug!("  - {}", file.path.display());
+        }
 
         Ok(Self {
             project_root: project_root.to_path_buf(),
