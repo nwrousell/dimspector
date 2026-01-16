@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 
 use anyhow::Result;
 use itertools::{Either, Itertools};
@@ -6,29 +6,58 @@ use petgraph::{
     graph::NodeIndex,
     visit::{Dfs, EdgeRef, Walker},
 };
-use rustpython_parser::{
-    ast::{
-        Expr as ASTExpr, ExprAttribute, ExprBinOp, ExprCall, ExprCompare, ExprConstant,
-        ExprJoinedStr, ExprList, ExprName, ExprSlice, ExprSubscript, ExprTuple, ExprUnaryOp,
-        Keyword, Stmt as ASTStmt, StmtAssign, StmtAugAssign, StmtExpr, StmtFor,
-        StmtFunctionDef as ASTFunction, StmtIf, StmtReturn, StmtWhile, StmtWith, UnaryOp,
-    },
-    text_size::TextRange,
+
+use ruff_python_ast::{
+    Expr as ASTExpr, ExprAttribute, ExprBinOp, ExprCall, ExprCompare, ExprEllipsisLiteral,
+    ExprFString, ExprList, ExprName, ExprNumberLiteral, ExprSlice, ExprStringLiteral,
+    ExprSubscript, ExprTuple, ExprUnaryOp, Keyword, Number, Stmt as ASTStmt, StmtAssign,
+    StmtAugAssign, StmtClassDef, StmtExpr, StmtFor, StmtFunctionDef, StmtIf, StmtReturn, StmtWhile,
+    StmtWith, UnaryOp,
 };
+use ruff_text_size::TextRange;
+use std::path::PathBuf;
 
 use crate::{
     analysis::{DimKind, DimVar},
-    ir::types::{Binop, Constant, ExprKind, Function, Slice},
+    ir::types::{Binop, Class, Constant, ExprKind, Function, Identifier, Slice, Type, intern},
 };
 use crate::{
     analysis::{Shape, Variable},
-    ir::types::{BasicBlock, BasicBlockIdx, Cfg, Expr, PartialCfg, Path, Statement, Terminator},
+    ir::types::{BasicBlock, BasicBlockIdx, Cfg, Expr, PartialCfg, Statement, Terminator},
 };
 
-pub fn lower_func(func: ASTFunction) -> Result<Function> {
-    let mut lowerer = LowerBody::new(func.clone());
+pub fn lower_class(
+    class_def: &StmtClassDef,
+    class_names: &std::collections::HashSet<Identifier>,
+    file_path: &PathBuf,
+    source: &str,
+) -> Result<Class> {
+    let mut methods = HashMap::new();
 
-    lowerer.lower_func_body(func.body)?;
+    // Process methods: iterate through body to find StmtFunctionDef
+    for stmt in &class_def.body {
+        if let ASTStmt::FunctionDef(method) = stmt {
+            let lowered_method = lower_func(method, class_names, file_path, source)?;
+            methods.insert(lowered_method.identifier, lowered_method);
+        }
+    }
+
+    Ok(Class {
+        identifier: intern(class_def.name.as_str()),
+        file_path: file_path.clone(),
+        methods,
+    })
+}
+
+pub fn lower_func(
+    func: &StmtFunctionDef,
+    class_names: &std::collections::HashSet<Identifier>,
+    file_path: &PathBuf,
+    source: &str,
+) -> Result<Function> {
+    let mut lowerer = LowerBody::new(func, class_names, source);
+
+    lowerer.lower_func_body(&func.body)?;
 
     // Find all basic blocks reachable from the start.
     let reachable = Dfs::new(&lowerer.graph, lowerer.start_block.into())
@@ -64,7 +93,8 @@ pub fn lower_func(func: ASTFunction) -> Result<Function> {
     }
 
     Ok(Function::new(
-        Path::new(&[func.name.to_string()]),
+        intern(func.name.as_str()),
+        file_path.clone(),
         cfg,
         lowerer.params,
         lowerer.returns,
@@ -72,28 +102,34 @@ pub fn lower_func(func: ASTFunction) -> Result<Function> {
 }
 
 struct LowerBody {
-    pub params: Vec<(Path, Option<Variable>)>,
+    pub params: Vec<(crate::ir::Identifier, Option<Variable>)>,
     pub returns: Option<Vec<Variable>>,
     pub graph: PartialCfg, // might need to turn this into DiGraph<Option<BasicBlock>, ()>
     pub cur_block: Vec<Statement>,
     pub cur_loc: Option<BasicBlockIdx>,
     pub start_block: BasicBlockIdx,
 
-    /// used to distinguish between method calls + function calls
-    pub known_paths: HashSet<String>,
+    /// Set of class identifiers for callable type inference heuristic
+    pub class_names: std::collections::HashSet<Identifier>,
+    /// Mapping from instance identifiers to their class identifiers
+    pub instance_identifiers: std::collections::HashMap<Identifier, Identifier>,
+    /// Source content for position calculation
+    pub source: String,
 }
 
 impl LowerBody {
-    fn new(func: ASTFunction) -> Self {
+    fn new(
+        func: &StmtFunctionDef,
+        class_names: &std::collections::HashSet<Identifier>,
+        source: &str,
+    ) -> Self {
         let mut graph = PartialCfg::new();
         let start_block = BasicBlockIdx::from(graph.add_node(None));
         let mut params = Vec::new();
 
-        let mut known_paths = HashSet::new();
-
         // populate params
-        for (i, arg) in func.args.args.clone().iter().enumerate() {
-            let identifier = &arg.def.arg;
+        for (i, param) in func.parameters.args.iter().enumerate() {
+            let identifier = &param.parameter.name;
 
             // TODO: have new Variable type so that not every non-tensor-annotated param is a DimVar
             let mut ty = Variable::DimVar(DimVar::new(crate::analysis::DimKind::Named(format!(
@@ -101,40 +137,32 @@ impl LowerBody {
                 i
             ))));
 
-            if let Some(annotation) = arg.def.annotation.clone() {
-                if let ASTExpr::Subscript(subscript) = *annotation {
-                    if let ASTExpr::Name(name) = *subscript.value {
-                        if name.id.as_str() == "T" {
-                            if let ASTExpr::Constant(shape_str) = *subscript.slice {
-                                let shape_str = shape_str.value.expect_str();
-                                ty = Variable::Tensor(Shape::from_str(&shape_str));
-                            }
-                        } else if name.id.as_str() == "int" {
-                            if let ASTExpr::Constant(dvar_str) = *subscript.slice {
-                                let dvar = dvar_str.value.expect_str();
-                                ty = Variable::DimVar(DimVar::new(DimKind::Named(dvar)));
+            if let Some(annotation) = &param.parameter.annotation {
+                // Try to extract shape string from annotation (supports both T["shape"] and Float[Tensor, "shape"])
+                if let Some(shape_str) = LowerBody::extract_shape_string(annotation) {
+                    ty = Variable::Tensor(Shape::from_str(&shape_str));
+                } else if let ASTExpr::Subscript(subscript) = annotation.as_ref() {
+                    // Handle int["dvar"] format
+                    if let ASTExpr::Name(name) = subscript.value.as_ref() {
+                        if name.id.as_str() == "int" {
+                            if let ASTExpr::StringLiteral(dvar_str) = subscript.slice.as_ref() {
+                                let dvar = dvar_str.value.to_str();
+                                ty =
+                                    Variable::DimVar(DimVar::new(DimKind::Named(dvar.to_string())));
                             }
                         }
                     }
                 }
             }
 
-            params.push((Path::new(&[identifier.to_string()]), Some(ty)));
-            known_paths.insert(identifier.to_string());
+            params.push((intern(identifier.as_str()), Some(ty)));
         }
 
         // TODO: handle tuple returns + factor out the logic identical from above
         let mut returns = None;
-        if let Some(ret_ty) = func.returns {
-            if let ASTExpr::Subscript(subscript) = *ret_ty {
-                if let ASTExpr::Name(name) = *subscript.value {
-                    if name.id.as_str() == "T" {
-                        if let ASTExpr::Constant(shape_str) = *subscript.slice {
-                            let shape_str = shape_str.value.expect_str();
-                            returns = Some(vec![Variable::Tensor(Shape::from_str(&shape_str))]);
-                        }
-                    }
-                }
+        if let Some(ret_ty) = &func.returns {
+            if let Some(shape_str) = LowerBody::extract_shape_string(ret_ty) {
+                returns = Some(vec![Variable::Tensor(Shape::from_str(&shape_str))]);
             }
         }
 
@@ -145,11 +173,98 @@ impl LowerBody {
             cur_block: Vec::new(),
             cur_loc: Some(start_block),
             start_block,
-            known_paths,
+            class_names: class_names.clone(),
+            instance_identifiers: std::collections::HashMap::new(),
+            source: source.to_string(),
         }
     }
 
-    fn lower_func_body(&mut self, body: Vec<ASTStmt>) -> Result<()> {
+    /// Convert a byte offset to an LSP Position (line, character)
+    fn byte_offset_to_position(&self, offset: usize) -> tower_lsp::lsp_types::Position {
+        let mut line = 0u32;
+        let mut character = 0u32;
+
+        for (idx, ch) in self.source.char_indices() {
+            if idx >= offset {
+                break;
+            }
+            if ch == '\n' {
+                line += 1;
+                character = 0;
+            } else {
+                character += 1;
+            }
+        }
+
+        tower_lsp::lsp_types::Position::new(line, character)
+    }
+
+    /// Extract shape string from type annotation.
+    /// Supports both T["shape"] and Float[Tensor, "shape"] formats.
+    fn extract_shape_string(annotation: &ASTExpr) -> Option<String> {
+        if let ASTExpr::Subscript(subscript) = annotation {
+            // Handle T["shape"] format
+            if let ASTExpr::Name(name) = subscript.value.as_ref() {
+                if name.id.as_str() == "T" {
+                    if let ASTExpr::StringLiteral(shape_str) = subscript.slice.as_ref() {
+                        return Some(shape_str.value.to_str().to_string());
+                    }
+                }
+            }
+            // Handle Float[Tensor, "shape"] or other jaxtyping formats
+            if let ASTExpr::Name(name) = subscript.value.as_ref() {
+                // Check for jaxtyping types: Float, Int, Bool, etc.
+                let jaxtyping_types = ["Float", "Int", "Bool", "UInt", "Complex", "BFloat16"];
+                if jaxtyping_types.contains(&name.id.as_str()) {
+                    if let ASTExpr::Tuple(tuple) = subscript.slice.as_ref() {
+                        // Tuple should have [Tensor, "shape"]
+                        if tuple.elts.len() >= 2 {
+                            // First element should be Tensor (or other tensor types)
+                            if let ASTExpr::Name(tensor_type) = &tuple.elts[0] {
+                                let tensor_types = ["Tensor", "Array", "Shaped"];
+                                if tensor_types.contains(&tensor_type.id.as_str()) {
+                                    // Second element should be the shape string
+                                    if let ASTExpr::StringLiteral(shape_str) = &tuple.elts[1] {
+                                        return Some(shape_str.value.to_str().to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Infer callable type by heuristic: if it's in the list of class names, it's a constructor.
+    /// If it's an attribute off of an instance identifier, it's a method, else default to function.
+    fn infer_callable_type(&self, expr: &ASTExpr) -> Type {
+        match expr {
+            ASTExpr::Name(ExprName { id, .. }) => {
+                let name = intern(id.as_str());
+                if self.class_names.contains(&name) {
+                    Type::Constructor(name)
+                } else {
+                    Type::Function
+                }
+            }
+            ASTExpr::Attribute(ExprAttribute { value, attr, .. }) => {
+                // Check if the value is an instance identifier (assigned from constructor)
+                if let ASTExpr::Name(ExprName { id, .. }) = value.as_ref() {
+                    let receiver_id = intern(id.as_str());
+                    if let Some(class_id) = self.instance_identifiers.get(&receiver_id) {
+                        return Type::Method(*class_id);
+                    }
+                }
+                // Otherwise, it's a function call on some other object
+                Type::Function
+            }
+            _ => Type::Other,
+        }
+    }
+
+    fn lower_func_body(&mut self, body: &[ASTStmt]) -> Result<()> {
         self.lower_body(body)?;
 
         // functions implicitly return None
@@ -160,9 +275,9 @@ impl LowerBody {
         Ok(())
     }
 
-    fn lower_body(&mut self, body: Vec<ASTStmt>) -> Result<()> {
+    fn lower_body(&mut self, body: &[ASTStmt]) -> Result<()> {
         for stmt in body {
-            self.lower_statement(stmt)?;
+            self.lower_statement(stmt.clone())?;
         }
         Ok(())
     }
@@ -201,11 +316,18 @@ impl LowerBody {
         }
     }
 
-    fn add_statement(&mut self, value: Expr, target: Option<Path>, range: TextRange) {
+    fn add_statement(
+        &mut self,
+        value: Expr,
+        target: Option<Expr>,
+        range: TextRange,
+        assign_end: Option<tower_lsp::lsp_types::Position>,
+    ) {
         let stmt = Statement {
             target,
             value,
             range,
+            assign_end,
         };
         self.cur_block.push(stmt);
     }
@@ -221,12 +343,12 @@ impl LowerBody {
                 // ! this doesn't work, as tuple assigns are represented as a tuple and not multiple targets
                 // split targets/value into pairs
                 let target_value_pairs = if targets.len() > 1 {
-                    if let Some(ExprTuple { elts, .. }) = value.as_tuple_expr() {
+                    if let ASTExpr::Tuple(ExprTuple { elts, .. }) = value.as_ref() {
                         assert!(elts.len() == targets.len());
                         targets
-                            .into_iter()
-                            .zip(elts.into_iter())
-                            .map(|(t, v)| (t, v.clone()))
+                            .iter()
+                            .zip(elts.iter())
+                            .map(|(t, v)| (t.clone(), v.clone()))
                             .collect()
                     } else {
                         return Err(anyhow::anyhow!(
@@ -238,9 +360,32 @@ impl LowerBody {
                 };
 
                 for (target, value) in target_value_pairs {
-                    let target = self.lower_expr_to_path(target)?;
-                    let value = self.lower_expr_to_expr(value)?;
-                    self.add_statement(value, Some(target), range);
+                    let target_range = match &target {
+                        ASTExpr::Name(ExprName { range, .. }) => *range,
+                        ASTExpr::Attribute(ExprAttribute { range, .. }) => *range,
+                        ASTExpr::Subscript(ExprSubscript { range, .. }) => *range,
+                        _ => range,
+                    };
+                    let target_expr = self.lower_expr(target.clone())?;
+
+                    // Check if the value is a constructor call - if so, track the target identifier
+                    if let ASTExpr::Call(ExprCall { func, .. }) = &value {
+                        if let ASTExpr::Name(ExprName { id, .. }) = func.as_ref() {
+                            let func_name = intern(id.as_str());
+                            if self.class_names.contains(&func_name) {
+                                // This is a constructor call - track the target identifier
+                                if let ASTExpr::Name(ExprName { id: target_id, .. }) = &target {
+                                    let target_ident = intern(target_id.as_str());
+                                    self.instance_identifiers.insert(target_ident, func_name);
+                                }
+                            }
+                        }
+                    }
+
+                    let value = self.lower_expr(value)?;
+                    let assign_end_byte = target_range.end().to_usize();
+                    let assign_end = Some(self.byte_offset_to_position(assign_end_byte));
+                    self.add_statement(value, Some(target_expr), range, assign_end);
                 }
             }
             ASTStmt::AugAssign(StmtAugAssign {
@@ -248,28 +393,39 @@ impl LowerBody {
                 range,
                 target,
                 value,
+                ..
             }) => {
-                let target = self.lower_expr_to_path(*target)?;
-                let value = self.lower_expr_to_expr(*value)?;
+                let target_range = match target.as_ref() {
+                    ASTExpr::Name(ExprName { range, .. }) => *range,
+                    ASTExpr::Attribute(ExprAttribute { range, .. }) => *range,
+                    ASTExpr::Subscript(ExprSubscript { range, .. }) => *range,
+                    _ => range,
+                };
+                let target_expr = self.lower_expr(*target.clone())?;
+                let value = self.lower_expr(*value)?;
+                let range_converted = range;
                 let expr = Expr::binop(
-                    Expr::path(target.clone(), range),
+                    target_expr.clone(),
                     value.clone(),
                     op.into(),
-                    range,
+                    range_converted,
+                    Type::Other,
                 );
-                self.add_statement(expr, Some(target), range);
+                let assign_end_byte = target_range.end().to_usize();
+                let assign_end = Some(self.byte_offset_to_position(assign_end_byte));
+                self.add_statement(expr, Some(target_expr), range_converted, assign_end);
             }
 
-            ASTStmt::Expr(StmtExpr { value, range }) => {
-                let value = self.lower_expr_to_expr(*value)?;
-                self.add_statement(value, None, range);
+            ASTStmt::Expr(StmtExpr { value, range, .. }) => {
+                let value = self.lower_expr(*value)?;
+                self.add_statement(value, None, range, None);
             }
 
             ASTStmt::While(StmtWhile {
                 body, orelse, test, ..
             }) => {
-                if orelse.len() > 1 {
-                    todo!("handle while else")
+                if !orelse.is_empty() {
+                    todo!("handle while loop else")
                 }
 
                 let cond_block = self.new_block();
@@ -281,7 +437,7 @@ impl LowerBody {
                 self.finish_block(Some(cond_block), jmp);
 
                 // which jumps to body or new block
-                let cond = self.lower_expr_to_expr(*test)?;
+                let cond = self.lower_expr(*test)?;
                 let jmp = Terminator::CondJump {
                     cond: Some(cond),
                     true_dst: body_block,
@@ -290,7 +446,7 @@ impl LowerBody {
                 self.finish_block(Some(body_block), jmp);
 
                 // lower body, jump to cond block
-                self.lower_body(body)?;
+                self.lower_body(&body)?;
                 let jmp = Terminator::Jump(cond_block);
                 match self.cur_loc {
                     Some(_) => {
@@ -302,43 +458,84 @@ impl LowerBody {
                 };
             }
             ASTStmt::If(StmtIf {
-                body, orelse, test, ..
+                body,
+                test,
+                elif_else_clauses,
+                ..
             }) => {
-                // make then and else blocks
-                let then_block = self.new_block();
-                let else_block = self.new_block();
+                let mut current_else_block = self.new_block();
                 let join_block = self.new_block();
 
-                // cond jump from current to then/else
-                let cond = self.lower_expr_to_expr(*test)?;
+                let then_block = self.new_block();
+                let cond = self.lower_expr(*test)?;
                 let jmp = Terminator::CondJump {
                     cond: Some(cond),
                     true_dst: then_block,
-                    false_dst: else_block,
+                    false_dst: current_else_block,
                 };
                 self.finish_block(Some(then_block), jmp);
 
-                // lower then body
+                self.lower_body(&body)?;
                 let jmp = Terminator::Jump(join_block);
-                self.lower_body(body)?;
                 match self.cur_loc {
                     Some(_) => {
-                        self.finish_block(Some(else_block), jmp.clone());
+                        self.finish_block(Some(current_else_block), jmp.clone());
                     }
-                    None => self.cur_loc = Some(else_block),
+                    None => self.cur_loc = Some(current_else_block),
                 };
 
-                // lower else body
-                self.lower_body(orelse)?;
-                match self.cur_loc {
-                    Some(_) => {
-                        self.finish_block(Some(join_block), jmp);
+                for clause in elif_else_clauses.iter() {
+                    if let Some(test) = &clause.test {
+                        // elif
+                        let elif_block = self.new_block();
+                        let next_else_block = self.new_block();
+                        let cond = self.lower_expr(test.clone())?;
+                        let jmp = Terminator::CondJump {
+                            cond: Some(cond),
+                            true_dst: elif_block,
+                            false_dst: next_else_block,
+                        };
+                        self.finish_block(Some(elif_block), jmp);
+
+                        self.lower_body(&clause.body)?;
+                        let jmp_to_join = Terminator::Jump(join_block);
+                        match self.cur_loc {
+                            Some(_) => {
+                                self.finish_block(Some(next_else_block), jmp_to_join.clone());
+                            }
+                            None => self.cur_loc = Some(next_else_block),
+                        };
+                        current_else_block = next_else_block;
+                    } else {
+                        // plain else
+                        self.lower_body(&clause.body)?;
+                        let jmp_to_join = Terminator::Jump(join_block);
+                        match self.cur_loc {
+                            Some(_) => {
+                                self.finish_block(Some(join_block), jmp_to_join);
+                            }
+                            None => self.cur_loc = Some(join_block),
+                        };
                     }
-                    None => self.cur_loc = Some(join_block),
-                };
+                }
+
+                if !elif_else_clauses.is_empty()
+                    && elif_else_clauses
+                        .last()
+                        .map(|c| c.test.is_some())
+                        .unwrap_or(false)
+                {
+                    let jmp_to_join = Terminator::Jump(join_block);
+                    match self.cur_loc {
+                        Some(_) => {
+                            self.finish_block(Some(join_block), jmp_to_join);
+                        }
+                        None => self.cur_loc = Some(join_block),
+                    };
+                }
             }
             ASTStmt::For(StmtFor { body, orelse, .. }) => {
-                if orelse.len() > 1 {
+                if !orelse.is_empty() {
                     todo!("handle for else")
                 }
 
@@ -359,7 +556,7 @@ impl LowerBody {
                 self.finish_block(Some(body_block), jmp);
 
                 // lower body
-                self.lower_body(body)?;
+                self.lower_body(&body)?;
                 let jmp = Terminator::Jump(cond_block);
                 match self.cur_loc {
                     Some(_) => {
@@ -374,7 +571,7 @@ impl LowerBody {
             ASTStmt::Return(StmtReturn { value, .. }) => {
                 let value = match value {
                     None => None,
-                    Some(expr) => Some(self.lower_expr_to_expr(*expr)?),
+                    Some(expr) => Some(self.lower_expr(*expr)?),
                 };
                 let ret = Terminator::Return(value);
                 self.finish_block(None, ret);
@@ -383,12 +580,11 @@ impl LowerBody {
             ASTStmt::With(StmtWith {
                 body, items, range, ..
             }) => {
-                let exprs = items.into_iter().map(|i| i.context_expr);
-                for expr in exprs {
-                    let expr = self.lower_expr_to_expr(expr)?;
-                    self.add_statement(expr, None, range);
+                for item in items.iter() {
+                    let expr = self.lower_expr(item.context_expr.clone())?;
+                    self.add_statement(expr, None, range, None);
                 }
-                self.lower_body(body)?
+                self.lower_body(&body)?
             }
 
             _ => todo!("unhandled statement: {stmt:?}"),
@@ -399,11 +595,11 @@ impl LowerBody {
 
     fn lower_expr_to_slice(&mut self, expr_slice: ExprSlice) -> Result<Slice> {
         let lower = match &expr_slice.lower {
-            Some(expr_lower) => Some(self.lower_expr_to_expr(*expr_lower.clone())?),
+            Some(expr_lower) => Some(self.lower_expr((**expr_lower).clone())?),
             None => None,
         };
         let upper = match &expr_slice.upper {
-            Some(expr_upper) => Some(self.lower_expr_to_expr(*expr_upper.clone())?),
+            Some(expr_upper) => Some(self.lower_expr((**expr_upper).clone())?),
             None => None,
         };
 
@@ -422,20 +618,25 @@ impl LowerBody {
                         ASTExpr::Slice(expr_slice) => {
                             Either::Right(self.lower_expr_to_slice(expr_slice)?)
                         }
-                        _ => Either::Left(self.lower_expr_to_expr(elt)?),
+                        _ => Either::Left(self.lower_expr(elt)?),
                     })
                 }
 
                 res
             }
-            _ => vec![Either::Left(self.lower_expr_to_expr(expr)?)],
+            ASTExpr::EllipsisLiteral(_) => {
+                todo!("handle ellipsis")
+            }
+            _ => vec![Either::Left(self.lower_expr(expr)?)],
         })
     }
 
-    fn lower_expr_to_expr(&mut self, expr: ASTExpr) -> Result<Expr> {
+    fn lower_expr(&mut self, expr: ASTExpr) -> Result<Expr> {
+        // For non-call expressions, use Other as the callable type
+        let ty = Type::Other;
         match expr {
             ASTExpr::Name(ExprName { id, range, .. }) => {
-                Ok(Expr::path(Path::new(&[id.to_string()]), range))
+                Ok(Expr::ident(intern(id.as_str()), range, ty))
             }
 
             ASTExpr::BinOp(ExprBinOp {
@@ -443,81 +644,88 @@ impl LowerBody {
                 op,
                 right,
                 range,
+                ..
             }) => {
-                let left = self.lower_expr_to_expr(*left)?;
-                let right = self.lower_expr_to_expr(*right)?;
-                Ok(Expr::binop(left, right, Binop::from(op), range))
+                let left = self.lower_expr(*left)?;
+                let right = self.lower_expr(*right)?;
+                Ok(Expr::binop(left, right, Binop::from(op), range, ty))
             }
 
-            ASTExpr::Constant(ExprConstant { range, value, .. }) => {
-                let constant = Constant::from(value);
-                Ok(Expr::constant(range, constant))
+            ASTExpr::NumberLiteral(ExprNumberLiteral { range, value, .. }) => {
+                let constant = match value {
+                    Number::Int(i) => Constant::Int(i.as_i64().unwrap_or(0)),
+                    Number::Float(f) => Constant::Float(f),
+                    Number::Complex { .. } => Constant::None,
+                };
+                Ok(Expr::constant(range, constant, ty))
             }
+            ASTExpr::StringLiteral(ExprStringLiteral { range, .. }) => {
+                Ok(Expr::constant(range, Constant::Str("".to_string()), ty))
+            }
+            ASTExpr::BooleanLiteral(expr) => {
+                Ok(Expr::constant(expr.range, Constant::Bool(expr.value), ty))
+            }
+            ASTExpr::NoneLiteral(expr) => Ok(Expr::constant(expr.range, Constant::None, ty)),
 
             ASTExpr::Call(ExprCall {
-                args,
+                arguments,
                 func,
-                keywords,
                 range,
+                ..
             }) => {
-                let pos_args = args
+                let pos_args = arguments
+                    .args
                     .iter()
-                    .map(|arg| self.lower_expr_to_expr(arg.clone()))
+                    .map(|arg| self.lower_expr(arg.clone()))
                     .collect::<Result<Vec<_>, anyhow::Error>>()?;
 
-                let keyword_args = keywords
+                let keyword_args = arguments
+                    .keywords
                     .iter()
                     .map(|Keyword { arg, value, .. }| {
-                        let e = self.lower_expr_to_expr(value.clone())?;
+                        let e = self.lower_expr(value.clone())?;
                         Ok((
-                            arg.clone()
-                                .expect("got a keyword argument without a keyword?")
-                                .to_string(),
+                            intern(
+                                arg.clone()
+                                    .expect("got a keyword argument without a keyword?")
+                                    .as_str(),
+                            ),
                             e,
                         ))
                     })
-                    .collect::<Result<Vec<(String, Expr)>, anyhow::Error>>()?;
+                    .collect::<Result<Vec<_>, anyhow::Error>>()?;
 
-                let mut path = self.lower_expr_to_path_inner(*func)?;
+                // Infer callable type from the function expression (can be Ident or Attribute chain)
+                let callable_ty = self.infer_callable_type(func.as_ref());
 
-                // currently we distinguish between method vs. function call by checking if the prefix is in known_paths.
-                // This doesn't catch nested cases, like 'self.foo.bar()' if 'self.foo' hasn't been written to in this function.
-                // which is something important to improve upon for object-oriented programming patterns (ex. pl.Lightning or nn.Module patterns),
-                // both for the self.foo.bar() pattern, as well as the class_instance.foo.bar() pattern. Seems tricky with Python's dynamism :/
-                let prefix_path = Path::new(&path[0..(path.len() - 1)]);
-                let classified_as_method_call =
-                    self.known_paths.contains(&prefix_path.to_dot_string());
+                // Lower the function expression (can be Ident or Attribute chain)
+                let function_expr = self.lower_expr(*func)?;
 
-                if classified_as_method_call {
-                    Ok(Expr::call(
-                        Some(prefix_path),
-                        Path::new(&[path.pop().unwrap()]),
-                        pos_args,
-                        keyword_args,
-                        range,
-                    ))
-                } else {
-                    Ok(Expr::call(
-                        None,
-                        Path::new(&path),
-                        pos_args,
-                        keyword_args,
-                        range,
-                    ))
-                }
+                Ok(Expr::call(
+                    function_expr,
+                    pos_args,
+                    keyword_args,
+                    range,
+                    callable_ty,
+                ))
             }
             ASTExpr::Attribute(ExprAttribute {
                 attr, value, range, ..
             }) => {
-                let mut path = self.lower_expr_to_path_inner(*value)?;
-                path.push(attr.to_string());
-                Ok(Expr::path(Path::new(&path), range))
+                let value_expr = self.lower_expr(*value)?;
+                Ok(Expr::attribute(
+                    value_expr,
+                    intern(attr.as_str()),
+                    range,
+                    ty,
+                ))
             }
             ASTExpr::UnaryOp(ExprUnaryOp { operand, op, .. }) => {
-                let operand = self.lower_expr_to_expr(*operand)?;
+                let operand = self.lower_expr(*operand)?;
                 match (op, &operand.kind) {
                     (UnaryOp::USub, ExprKind::Constant(c)) => Ok(Expr {
                         kind: ExprKind::Constant(c.negate_if_num().unwrap()),
+                        ty,
                         span: operand.span,
                     }),
                     _ => Ok(operand),
@@ -530,19 +738,20 @@ impl LowerBody {
                 range,
                 ..
             }) => {
-                let left = self.lower_expr_to_expr(*left)?;
-                let right = self.lower_expr_to_expr(comparators.first().unwrap().clone())?;
+                let left = self.lower_expr(*left)?;
+                let right = self.lower_expr(comparators.first().unwrap().clone())?;
                 let mut bool_expr = Expr::binop(
                     left,
                     right,
                     Binop::from(ops.first().unwrap().clone()),
                     range,
+                    ty.clone(),
                 );
 
                 for (cmp, op) in comparators.into_iter().zip_eq(ops).skip(1) {
                     let left = bool_expr;
-                    let right = self.lower_expr_to_expr(cmp)?;
-                    bool_expr = Expr::binop(left, right, Binop::from(op), range);
+                    let right = self.lower_expr(cmp)?;
+                    bool_expr = Expr::binop(left, right, Binop::from(op), range, ty.clone());
                 }
 
                 Ok(bool_expr)
@@ -551,9 +760,9 @@ impl LowerBody {
             ASTExpr::Tuple(ExprTuple { range, elts, .. }) => {
                 let elts = elts
                     .into_iter()
-                    .map(|e| self.lower_expr_to_expr(e))
+                    .map(|e| self.lower_expr(e))
                     .collect::<Result<Vec<Expr>>>()?;
-                Ok(Expr::tuple(elts, range))
+                Ok(Expr::tuple(elts, range, ty))
             }
             ASTExpr::Subscript(ExprSubscript {
                 value,
@@ -561,60 +770,26 @@ impl LowerBody {
                 range,
                 ..
             }) => {
-                let expr = self.lower_expr_to_expr(*value)?;
+                let expr = self.lower_expr(*value)?;
                 let index = self.lower_expr_to_index(*slice)?;
 
-                Ok(Expr::index(range, expr, index))
+                Ok(Expr::index(range, expr, index, ty))
             }
 
-            ASTExpr::JoinedStr(ExprJoinedStr { range, .. }) => {
-                Ok(Expr::constant(range, Constant::None))
+            ASTExpr::FString(ExprFString { range, .. }) => {
+                Ok(Expr::constant(range, Constant::None, ty))
             }
 
             ASTExpr::List(ExprList { elts, range, .. }) => {
                 let elts = elts
                     .into_iter()
-                    .map(|e| self.lower_expr_to_expr(e))
+                    .map(|e| self.lower_expr(e))
                     .collect::<Result<Vec<Expr>>>()?;
 
-                // TODO: might be good to rename Tuple to Seq
-                Ok(Expr::tuple(elts, range))
+                Ok(Expr::tuple(elts, range, ty))
             }
 
             _ => todo!("unhandled expr: {expr:#?}"),
-        }
-    }
-
-    fn lower_expr_to_path(&mut self, expr: ASTExpr) -> Result<Path> {
-        let path = self.lower_expr_to_path_inner(expr)?;
-        let path = Path::new(&path);
-        self.known_paths.insert(path.to_dot_string());
-        Ok(path)
-    }
-
-    // forces expr to be interpreted as a path
-    fn lower_expr_to_path_inner(&mut self, expr: ASTExpr) -> Result<Vec<String>> {
-        match expr {
-            ASTExpr::Attribute(ExprAttribute { attr, value, .. }) => {
-                let mut path = self.lower_expr_to_path_inner(*value)?;
-                path.push(attr.to_string());
-                Ok(path)
-            }
-            ASTExpr::Subscript(ExprSubscript { slice, value, .. }) => {
-                let mut path = self.lower_expr_to_path_inner(*value)?;
-                let slice_path = self.lower_expr_to_path_inner(*slice)?;
-                path.extend(slice_path);
-                Ok(path)
-            }
-            ASTExpr::Name(ExprName { id, .. }) => Ok(vec![id.to_string()]),
-            ASTExpr::Call(ExprCall { func, .. }) => {
-                let path = self.lower_expr_to_path_inner(*func)?;
-                Ok(path)
-            }
-
-            ASTExpr::Slice(ExprSlice { .. }) => todo!("slice as part of path"),
-
-            _ => unreachable!("got something weird as part of a path: {:#?}", expr),
         }
     }
 }

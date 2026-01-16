@@ -4,12 +4,12 @@ use itertools::Itertools;
 
 use crate::{
     analysis::{
-        AnalysisDomain, FunctionAnalysis, GlobalAnalysis,
+        AnalysisDomain, ClassAnalysis, FunctionAnalysis, GlobalAnalysis,
         dimvars::{CanonicalDimVar, DimVar, NamedPow, Term},
     },
     ir::{
-        Function,
-        types::{Location, Path},
+        Class, Function, resolve,
+        types::{ExprKind, Location},
     },
     utils::{indent, write_comma_separated},
 };
@@ -30,6 +30,23 @@ impl fmt::Display for Variable {
             Variable::Tensor(shape) => write!(f, "{}", shape),
             Variable::Tuple(vars) => write_comma_separated(f, vars),
             Variable::None => write!(f, "None"),
+            Variable::ClassInstance(instance) => {
+                use crate::ir::types::resolve;
+                write!(f, "{}", resolve(instance.class_id))?;
+                if !instance.substitutions.is_empty() {
+                    write!(f, "{{")?;
+                    let mut first = true;
+                    for (param_dv, concrete_dv) in &instance.substitutions {
+                        if !first {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}->{}", param_dv, concrete_dv)?;
+                        first = false;
+                    }
+                    write!(f, "}}")?;
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -44,7 +61,7 @@ impl fmt::Display for Shape {
 
 impl fmt::Display for FunctionAnalysis {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Function {}\n", self.id)?;
+        write!(f, "Function {}\n", resolve(self.id))?;
         for (loc, domain) in self
             .state
             .iter()
@@ -52,7 +69,7 @@ impl fmt::Display for FunctionAnalysis {
         {
             write!(f, "  {}\n", loc)?;
             for (path, vars) in domain.iter() {
-                write!(f, "    {} => {{", path)?;
+                write!(f, "    {} => {{", resolve(*path))?;
                 write_comma_separated(f, vars)?;
                 write!(f, "}}\n")?
             }
@@ -129,7 +146,7 @@ impl fmt::Display for NamedPow {
 }
 
 #[allow(dead_code)]
-fn format_annotation(domain: &AnalysisDomain, target: &Path) -> String {
+fn format_annotation(domain: &AnalysisDomain, target: &crate::ir::Identifier) -> String {
     if let Some(vars) = domain.get(target) {
         let vars = vars.iter().map(|v| format!("{}", v)).join(", ");
         "{".to_owned() + &vars + "}"
@@ -139,14 +156,14 @@ fn format_annotation(domain: &AnalysisDomain, target: &Path) -> String {
 }
 
 #[allow(dead_code)]
-pub fn ir_with_inferred_shapes_to_string(
+pub fn function_with_inferred_shapes_to_string(
     ir: &Function,
     func_facts: &FunctionAnalysis,
     stop_at: Option<Location>,
 ) -> String {
     let mut output = String::new();
 
-    write!(output, "def {}(", ir.identifier).unwrap();
+    write!(output, "def {}(", resolve(ir.identifier)).unwrap();
     for (i, param) in ir.params.iter().enumerate() {
         if i > 0 {
             output.push_str(", ");
@@ -175,7 +192,7 @@ pub fn ir_with_inferred_shapes_to_string(
             if let Some(stop) = stop_at {
                 if loc == stop {
                     write!(output, "  {}:\n", block_idx).unwrap();
-                    output.push_str(&indent(indent(&block_content)));
+                    output.push_str(&indent(&indent(&block_content)));
                     break 'outer;
                 }
             }
@@ -185,7 +202,28 @@ pub fn ir_with_inferred_shapes_to_string(
             };
 
             let annotated_stmt = if let Some(target) = &stmt.target {
-                let annotation = format_annotation(domain, target);
+                // Show annotation for Ident targets and self.X Attribute targets
+                let annotation = match &target.kind {
+                    ExprKind::Ident(name) => format_annotation(domain, name),
+                    ExprKind::Attribute { value, attr } => {
+                        // Handle self.X assignments
+                        if let ExprKind::Ident(self_ident) = &value.kind {
+                            if crate::ir::resolve(*self_ident) == "self" {
+                                // Look up "self.X" in domain
+                                let self_attr_name = crate::ir::intern(&format!(
+                                    "self.{}",
+                                    crate::ir::resolve(*attr)
+                                ));
+                                format_annotation(domain, &self_attr_name)
+                            } else {
+                                "{}".to_owned()
+                            }
+                        } else {
+                            "{}".to_owned()
+                        }
+                    }
+                    _ => "{}".to_owned(),
+                };
                 format!("{}: {} = {}", target, annotation, stmt.value)
             } else {
                 format!("{}", stmt.value)
@@ -202,7 +240,7 @@ pub fn ir_with_inferred_shapes_to_string(
         if let Some(stop) = stop_at {
             if term_loc == stop {
                 write!(output, "  {}:\n", block_idx).unwrap();
-                output.push_str(&indent(indent(&block_content)));
+                output.push_str(&indent(&indent(&block_content)));
                 break 'outer;
             }
         }
@@ -210,20 +248,85 @@ pub fn ir_with_inferred_shapes_to_string(
         writeln!(block_content, "{}", block.terminator).unwrap();
 
         write!(output, "  {}:\n", block_idx).unwrap();
-        output.push_str(&indent(indent(&block_content)));
+        output.push_str(&indent(&indent(&block_content)));
     }
 
     output
 }
 
 #[allow(dead_code)]
-pub fn print_ir_with_inferred_shapes(
+pub fn print_function_with_inferred_shapes(
     ir: &Function,
     func_facts: &FunctionAnalysis,
     stop_at: Option<Location>,
 ) {
     print!(
         "{}",
-        ir_with_inferred_shapes_to_string(ir, func_facts, stop_at)
+        function_with_inferred_shapes_to_string(ir, func_facts, stop_at)
+    );
+}
+
+#[allow(dead_code)]
+pub fn class_with_inferred_shapes_to_string(
+    class: &Class,
+    class_facts: &ClassAnalysis,
+    stop_at: Option<Location>,
+) -> String {
+    let mut output = String::new();
+
+    write!(output, "class {}:\n", resolve(class.identifier)).unwrap();
+
+    // Print inferred attributes as class variable annotations
+    if !class_facts.attributes.is_empty() {
+        for (attr_ident, vars) in class_facts
+            .attributes
+            .iter()
+            .sorted_by(|(a, _), (b, _)| resolve(**a).cmp(&resolve(**b)))
+        {
+            let vars_str = vars.iter().map(|v| format!("{}", v)).join(", ");
+            write!(output, "    {}: {{{}}}\n", resolve(*attr_ident), vars_str).unwrap();
+        }
+        output.push_str("\n");
+    }
+
+    // Print methods
+    if !class.methods.is_empty() {
+        let mut first = true;
+        for (method_name, method_func) in class
+            .methods
+            .iter()
+            .sorted_by(|(a, _), (b, _)| resolve(**a).cmp(&resolve(**b)))
+        {
+            if !first {
+                output.push_str("\n");
+            }
+            first = false;
+
+            // Get method analysis if available
+            if let Some(method_analysis) = class_facts.methods.get(method_name) {
+                let method_output =
+                    function_with_inferred_shapes_to_string(method_func, method_analysis, stop_at);
+                // Indent the method content
+                output.push_str(&indent(&method_output));
+            } else {
+                // Fallback to basic method printing if no analysis available
+                let method_content = format!("{}", method_func);
+                output.push_str(&indent(&method_content));
+            }
+        }
+    }
+
+    output
+}
+
+#[allow(dead_code)]
+pub fn print_class_with_inferred_shapes(
+    class: &Class,
+    class_facts: &ClassAnalysis,
+    stop_at: Option<Location>,
+) {
+    print!(
+        "{}",
+        class_with_inferred_shapes_to_string(class, class_facts, stop_at)
     );
 }

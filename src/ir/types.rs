@@ -8,19 +8,50 @@ use petgraph::{
     graph::{DiGraph, NodeIndex},
 };
 use smallvec::{SmallVec, smallvec};
+use std::sync::{LazyLock, Mutex};
+use string_interner::{DefaultSymbol, StringInterner, backend::StringBackend};
 
-use rustpython_parser::{
-    ast::{CmpOp, Constant as ASTConstant, Operator},
-    text_size::TextRange,
-};
+use ruff_python_ast::{CmpOp, Operator};
+use ruff_text_size::TextRange;
 
-use num_traits::ToPrimitive;
+use tower_lsp::lsp_types::Position;
 
 use crate::analysis::Variable;
 
+/// Interned string type for identifiers
+pub type Identifier = DefaultSymbol;
+
+/// Global string interner for identifiers
+static INTERNER: LazyLock<Mutex<StringInterner<StringBackend<DefaultSymbol>>>> =
+    LazyLock::new(|| Mutex::new(StringInterner::default()));
+
+/// Intern a string and return its symbol
+pub fn intern(s: &str) -> Identifier {
+    INTERNER.lock().unwrap().get_or_intern(s)
+}
+
+/// Resolve a symbol back to its string
+pub fn resolve(sym: Identifier) -> String {
+    INTERNER.lock().unwrap().resolve(sym).unwrap().to_string()
+}
+
 #[derive(Clone, Debug)]
-pub struct Program {
+pub struct Project {
+    pub files: Vec<File>,
+}
+
+#[derive(Clone, Debug)]
+pub struct File {
+    pub path: std::path::PathBuf,
     pub functions: Vec<Function>,
+    pub classes: Vec<Class>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Class {
+    pub identifier: Identifier,
+    pub file_path: std::path::PathBuf,
+    pub methods: HashMap<Identifier, Function>,
 }
 
 pub type Cfg = DiGraph<BasicBlock, ()>;
@@ -56,7 +87,8 @@ impl Location {
 
 #[derive(Clone, Debug)]
 pub struct Function {
-    pub identifier: Path,
+    pub identifier: Identifier,
+    pub file_path: std::path::PathBuf,
     pub cfg: Cfg,
     pub params: Vec<Parameter>,
     pub returns: Option<Vec<Variable>>,
@@ -65,19 +97,20 @@ pub struct Function {
 }
 
 #[derive(Clone, Debug)]
-pub struct Parameter(pub Path, pub Option<Variable>);
+pub struct Parameter(pub Identifier, pub Option<Variable>);
 
 impl Parameter {
-    pub fn new(param: Path, annotation: Option<Variable>) -> Self {
+    pub fn new(param: Identifier, annotation: Option<Variable>) -> Self {
         Self(param, annotation)
     }
 }
 
 impl Function {
     pub fn new(
-        identifier: Path,
+        identifier: Identifier,
+        file_path: std::path::PathBuf,
         cfg: Cfg,
-        params: Vec<(Path, Option<Variable>)>,
+        params: Vec<(Identifier, Option<Variable>)>,
         returns: Option<Vec<Variable>>,
     ) -> Function {
         let rpo: Vec<BasicBlockIdx> = utils::reverse_post_order(&cfg, 0.into())
@@ -101,6 +134,7 @@ impl Function {
 
         Self {
             identifier,
+            file_path,
             cfg,
             locations,
             rpo,
@@ -139,6 +173,23 @@ impl Function {
 
     pub fn instr(&self, loc: &Location) -> Either<&Statement, &Terminator> {
         self.data(loc.block).get(loc.instr)
+    }
+
+    /// Returns all final locations in the function (locations at Return terminators).
+    /// These are the locations where the function terminates, including implicit returns.
+    pub fn final_locations(&self) -> Vec<Location> {
+        let mut final_locs = Vec::new();
+        for block_idx in self.blocks() {
+            let block = self.data(block_idx);
+            if matches!(block.terminator, Terminator::Return(_)) {
+                // The final location is at the terminator position (after all statements)
+                final_locs.push(Location {
+                    block: block_idx,
+                    instr: block.statements.len(),
+                });
+            }
+        }
+        final_locs
     }
 }
 
@@ -218,35 +269,37 @@ impl From<BasicBlockIdx> for NodeIndex {
     }
 }
 
-#[derive(Clone, Hash, Eq, PartialEq, Debug)]
-pub struct Path(Vec<String>);
-
-impl Path {
-    pub fn new(path: &[String]) -> Self {
-        Self(path.into())
-    }
-
-    pub fn to_dot_string(&self) -> String {
-        self.0.join(".")
-    }
-
-    pub fn parts(&self) -> &[String] {
-        &self.0
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct Statement {
     pub value: Expr,
-    pub target: Option<Path>,
+    pub target: Option<Expr>,
     pub range: TextRange,
+    pub assign_end: Option<Position>,
 }
 
 #[derive(Clone, Debug)]
 pub struct Expr {
     pub kind: ExprKind,
+    pub ty: Type,
     pub span: SourceSpan,
 }
+
+// Manual implementations of Hash, Eq, PartialEq that exclude span
+// (span is only for error reporting, not semantic equality)
+impl std::hash::Hash for Expr {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.kind.hash(state);
+        self.ty.hash(state);
+    }
+}
+
+impl PartialEq for Expr {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind && self.ty == other.ty
+    }
+}
+
+impl Eq for Expr {}
 
 pub fn range_to_span(range: TextRange) -> SourceSpan {
     let start = SourceOffset::from(range.start().to_usize());
@@ -255,62 +308,78 @@ pub fn range_to_span(range: TextRange) -> SourceSpan {
 }
 
 impl Expr {
-    pub fn binop(left: Expr, right: Expr, op: Binop, range: TextRange) -> Expr {
+    pub fn binop(left: Expr, right: Expr, op: Binop, range: TextRange, ty: Type) -> Expr {
         Expr {
             kind: ExprKind::Binop {
                 left: Box::new(left),
                 right: Box::new(right),
                 op,
             },
+            ty,
+            span: range_to_span(range),
+        }
+    }
+
+    pub fn ident(name: Identifier, range: TextRange, ty: Type) -> Expr {
+        Expr {
+            kind: ExprKind::Ident(name),
+            ty,
+            span: range_to_span(range),
+        }
+    }
+
+    pub fn attribute(value: Expr, attr: Identifier, range: TextRange, ty: Type) -> Expr {
+        Expr {
+            kind: ExprKind::Attribute {
+                value: Box::new(value),
+                attr,
+            },
+            ty,
             span: range_to_span(range),
         }
     }
 
     pub fn call(
-        receiver: Option<Path>,
-        function: Path,
+        function: Expr,
         pos_args: Vec<Expr>,
-        keyword_args: Vec<(String, Expr)>,
+        keyword_args: Vec<(Identifier, Expr)>,
         range: TextRange,
+        ty: Type,
     ) -> Expr {
         Expr {
             kind: ExprKind::Call {
-                receiver,
-                function,
+                function: Box::new(function),
                 pos_args,
                 keyword_args,
             },
+            ty,
             span: range_to_span(range),
         }
     }
 
-    pub fn constant(range: TextRange, constant: Constant) -> Expr {
+    pub fn constant(range: TextRange, constant: Constant, ty: Type) -> Expr {
         Expr {
             kind: ExprKind::Constant(constant),
+            ty,
             span: range_to_span(range),
         }
     }
 
-    pub fn path(path: Path, range: TextRange) -> Expr {
-        Expr {
-            kind: ExprKind::Path(path),
-            span: range_to_span(range),
-        }
-    }
-
-    pub fn index(range: TextRange, expr: Expr, index: Vec<Either<Expr, Slice>>) -> Expr {
+    pub fn index(range: TextRange, expr: Expr, index: Vec<Either<Expr, Slice>>, ty: Type) -> Expr {
         Expr {
             kind: ExprKind::Index {
                 receiver: Box::new(expr),
                 index,
             },
+            ty,
             span: range_to_span(range),
         }
     }
 
-    pub fn tuple(elts: Vec<Expr>, range: TextRange) -> Expr {
+    pub fn tuple(elts: Vec<Expr>, range: TextRange, ty: Type) -> Expr {
         Expr {
             kind: ExprKind::Tuple(elts),
+            ty,
             span: range_to_span(range),
         }
     }
@@ -325,6 +394,46 @@ pub enum Constant {
     Float(f64),
 }
 
+// Manual implementations for Hash/Eq since f64 doesn't implement these
+impl std::hash::Hash for Constant {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        match self {
+            Constant::None => 0.hash(state),
+            Constant::Bool(b) => {
+                1.hash(state);
+                b.hash(state);
+            }
+            Constant::Str(s) => {
+                2.hash(state);
+                s.hash(state);
+            }
+            Constant::Int(i) => {
+                3.hash(state);
+                i.hash(state);
+            }
+            Constant::Float(f) => {
+                4.hash(state);
+                f.to_bits().hash(state); // Use bit representation for hashing
+            }
+        }
+    }
+}
+
+impl PartialEq for Constant {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Constant::None, Constant::None) => true,
+            (Constant::Bool(a), Constant::Bool(b)) => a == b,
+            (Constant::Str(a), Constant::Str(b)) => a == b,
+            (Constant::Int(a), Constant::Int(b)) => a == b,
+            (Constant::Float(a), Constant::Float(b)) => a.to_bits() == b.to_bits(),
+            _ => false,
+        }
+    }
+}
+
+impl Eq for Constant {}
+
 impl Constant {
     pub fn negate_if_num(&self) -> Option<Self> {
         match self {
@@ -335,30 +444,7 @@ impl Constant {
     }
 }
 
-impl From<ASTConstant> for Constant {
-    fn from(value: ASTConstant) -> Self {
-        match value {
-            ASTConstant::None => Self::None,
-            ASTConstant::Bool(b) => Self::Bool(b),
-            ASTConstant::Str(s) => Self::Str(s),
-            ASTConstant::Bytes(_) => Self::None,
-            ASTConstant::Int(big_int) => Self::Int(
-                big_int
-                    .to_i64()
-                    .expect("Constant BigInt too big/small for i64"),
-            ),
-            ASTConstant::Tuple(_) => {
-                todo!()
-                // Self::Tuple(constants.into_iter().map(|c| Constant::from(c)).collect())
-            }
-            ASTConstant::Float(f) => Constant::Float(f),
-            ASTConstant::Complex { .. } => Self::None,
-            ASTConstant::Ellipsis => Self::None,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Hash, Eq, PartialEq)]
 pub enum Binop {
     Add,
     Sub,
@@ -425,21 +511,38 @@ impl From<Operator> for Binop {
     }
 }
 
-#[derive(Clone, Debug)]
+/// Represents the callable type of an expression.
+/// Relies on hacky heuristics to avoid having to implement full type inference right now.
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
+pub enum Type {
+    /// Class constructor - the identifier is the class name
+    Constructor(Identifier),
+    /// Bound method - the identifier is the class that owns the method
+    Method(Identifier),
+    /// Regular function (not a method or constructor)
+    Function,
+    /// Other types or unknown
+    Other,
+}
+
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub enum ExprKind {
+    Ident(Identifier),
+    Attribute {
+        value: Box<Expr>,
+        attr: Identifier,
+    },
     Binop {
         left: Box<Expr>,
         right: Box<Expr>,
         op: Binop,
     },
     Call {
-        receiver: Option<Path>,
-        function: Path,
+        function: Box<Expr>,
         pos_args: Vec<Expr>,
-        keyword_args: Vec<(String, Expr)>,
+        keyword_args: Vec<(Identifier, Expr)>,
     },
     Constant(Constant),
-    Path(Path),
     Tuple(Vec<Expr>),
     Index {
         receiver: Box<Expr>,
@@ -447,7 +550,7 @@ pub enum ExprKind {
     },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub struct Slice {
     pub lower: Option<Expr>,
     pub upper: Option<Expr>,

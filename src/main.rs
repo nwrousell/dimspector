@@ -1,15 +1,23 @@
-use clap::Parser;
-use dimspector::{
-    analysis::{ShapeError, analyze, print_ir_with_inferred_shapes},
-    ast, ir,
-};
-use miette::{MietteHandlerOpts, Report, Result};
+use clap::{Parser, Subcommand};
+use dimspector::{api::Dimspector, lsp};
+use miette::{MietteHandlerOpts, Result};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 struct Args {
-    /// Path of the file to check
-    file: PathBuf,
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Analyze a file or directory and report shape errors
+    Check {
+        /// Path of the file (.py) or directory to check
+        path: PathBuf,
+    },
+    /// Start the language server (communicates over stdio)
+    Server,
 }
 
 fn main() -> Result<()> {
@@ -22,50 +30,50 @@ fn main() -> Result<()> {
 
     let args = Args::parse();
 
-    if let Err(err) = run(args.file) {
-        eprintln!("{:?}", err);
-        std::process::exit(1);
+    match args.command {
+        Command::Check { path } => {
+            if let Err(err) = check(path) {
+                eprintln!("{:?}", err);
+                std::process::exit(1);
+            }
+        }
+        Command::Server => {
+            lsp::start_server();
+        }
     }
+
     Ok(())
 }
 
-fn run(file: PathBuf) -> Result<()> {
-    let input = match ast::read(&file) {
-        Err(e) => return Err(Report::msg(e)),
-        Ok(input) => input,
-    };
-
-    let program = match ast::parse(&input) {
-        Err(e) => return Err(Report::msg(e)),
-        Ok(program) => program,
-    };
-    // log::debug!("AST:\n{}", program);
-
-    let ir = match ir::lower(program) {
-        Err(e) => return Err(Report::msg(e)),
-        Ok(ir) => ir,
-    };
-    log::debug!("IR:\n{}", ir);
-
-    let res = analyze(ir.clone());
-    let res = match res {
-        Ok(res) => res,
-        Err(err) => {
-            let named_source = input.into_named_source();
-            if let Some(shape_error) = err.downcast_ref::<ShapeError>() {
-                let report = Report::new(shape_error.clone()).with_source_code(named_source);
-                return Err(report.into());
-            } else {
-                return Err(Report::msg(err));
-            }
-        }
-    };
-
-    for (name, facts) in &res.functions {
-        let func = ir.functions.iter().find(|f| f.identifier == *name).unwrap();
-        print_ir_with_inferred_shapes(func, facts, None);
-        println!("\n")
+fn check(path: PathBuf) -> anyhow::Result<()> {
+    if !path.exists() {
+        anyhow::bail!("path not found: {}", path.display());
     }
+
+    let abs_path = std::fs::canonicalize(&path)?;
+
+    // Determine project root
+    let project_root = if abs_path.is_file() {
+        abs_path.parent().unwrap_or(&abs_path)
+    } else if abs_path.is_dir() {
+        &abs_path
+    } else {
+        anyhow::bail!("path must be a Python file (.py) or a directory");
+    };
+
+    // Use Dimspector API to analyze the project
+    let (dimspector, errors) = Dimspector::from_project_root(project_root)?;
+
+    // Print errors if any
+    if !errors.is_empty() {
+        for (file_path, error) in &errors {
+            eprintln!("Error in {}: {:?}", file_path.display(), error);
+        }
+        anyhow::bail!("shape analysis found {} errors", errors.len());
+    }
+
+    // Print analysis results
+    print!("{}", dimspector.format_all());
 
     Ok(())
 }

@@ -8,14 +8,14 @@ use miette::SourceSpan;
 
 use crate::analysis::errors::ShapeError;
 use crate::analysis::{DimKind, DimVar, Shape, Variable};
-use crate::ir::{Function, Parameter};
+use crate::ir::{Function, Identifier, Parameter, intern, resolve};
 
 macro_rules! get_args {
     ($args:expr, $model_name:ident, $( $param:ident : $method:ident => $type_name:expr ),+ $(,)?) => {
         {
             $(
                 let $param = $args
-                    .get(stringify!($param))
+                    .get(&intern(stringify!($param)))
                     .ok_or_else(|| anyhow!("param '{}' wasn't supplied to {}", stringify!($param), stringify!($model_name)))?
                     .$method()
                     .ok_or_else(|| anyhow!("param '{}' supplied to {} not a {} or has unknown shape", stringify!($param), stringify!($model_name), $type_name))?;
@@ -35,31 +35,38 @@ fn constraint_equal(dim1: &DimVar, dim2: &DimVar, span: SourceSpan) -> Result<()
     }
 }
 
+#[derive(Debug)]
 pub struct ModelContext {
     pub torch: TorchModels,
     pub user: UserModels,
 }
 
 impl ModelContext {
-    pub fn new(funcs: &Vec<Function>) -> Self {
+    pub fn new(funcs: &Vec<Function>, symbol_table: &crate::parse::SymbolTable) -> Self {
         Self {
             torch: TorchModels::default(),
-            user: UserModels::new(funcs),
+            user: UserModels::new(funcs, symbol_table),
         }
     }
 }
 
+#[derive(Debug)]
 pub struct UserModels {
     pub funcs: HashMap<String, Box<dyn Model>>,
 }
 
 impl UserModels {
-    fn new(funcs: &Vec<Function>) -> Self {
+    fn new(funcs: &Vec<Function>, symbol_table: &crate::parse::SymbolTable) -> Self {
         let map: HashMap<String, Box<dyn Model>> = funcs
             .iter()
             .map(|f| {
+                let local_name = resolve(f.identifier);
+                let canonical = symbol_table
+                    .resolve(&f.file_path, &local_name)
+                    .cloned()
+                    .unwrap_or(local_name);
                 (
-                    f.identifier.to_string(),
+                    canonical,
                     Box::new(SignatureModel::new(f)) as Box<dyn Model>,
                 )
             })
@@ -69,6 +76,7 @@ impl UserModels {
     }
 }
 
+#[derive(Debug)]
 pub struct TorchModels {
     pub matmul: MatmulModel,
     pub passthrough: PassthroughModel,
@@ -97,11 +105,11 @@ impl Default for TorchModels {
     }
 }
 
-pub trait Model {
+pub trait Model: std::fmt::Debug + Send + Sync {
     fn infer(
         &self,
         args: Vec<&Variable>,
-        kwargs: HashMap<String, &Variable>,
+        kwargs: HashMap<Identifier, &Variable>,
         span: SourceSpan,
     ) -> Result<Shape>;
 }
@@ -175,7 +183,7 @@ impl ModelContext {
             "torch.sum" | "torch.mean" | "torch.prod" | "torch.amax" | "torch.amin"
             | "torch.std" | "torch.var" | "torch.logsumexp" | "torch.all" | "torch.any"
             | "torch.nansum" | "torch.nanmean" => Some(&self.torch.rdx),
-            "torch.concat" => Some(&self.torch.concat),
+            "torch.concat" | "torch.cat" => Some(&self.torch.concat),
             "torch.reshape" | "torch.view" => Some(&self.torch.reshape),
             "torch.transpose" => Some(&self.torch.tranpose),
             "torch.zeros" | "torch.ones" | "torch.empty" | "torch.rand" | "torch.randn"
@@ -197,22 +205,22 @@ impl ModelContext {
 
 pub fn resolve_args(
     args: Vec<&Variable>,
-    kwargs: HashMap<String, &Variable>,
+    kwargs: HashMap<Identifier, &Variable>,
     signature: &Signature,
-) -> HashMap<String, Variable> {
+) -> HashMap<Identifier, Variable> {
     let mut mapping = HashMap::new();
     match signature {
         Signature::Variadic { kwargs_defaults } => {
             mapping.insert(
-                "variadic".to_string(),
+                intern("variadic"),
                 Variable::Tuple(args.into_iter().map(|v| v.clone()).collect()),
             );
 
             for (name, default) in kwargs_defaults.into_iter() {
                 if let Some(arg) = kwargs.get(name) {
-                    mapping.insert(name.clone(), (*arg).clone());
+                    mapping.insert(*name, (*arg).clone());
                 } else {
-                    mapping.insert(name.clone(), default.clone());
+                    mapping.insert(*name, default.clone());
                 }
             }
         }
@@ -228,7 +236,7 @@ pub fn resolve_args(
                     panic!("arg not found for function");
                 };
 
-                mapping.insert(name.clone(), arg.clone());
+                mapping.insert(*name, arg.clone());
             }
         }
     };
@@ -236,13 +244,15 @@ pub fn resolve_args(
     mapping
 }
 
+#[derive(Debug)]
 pub enum Signature {
     Variadic {
-        kwargs_defaults: Vec<(String, Variable)>,
+        kwargs_defaults: Vec<(Identifier, Variable)>,
     },
-    FixedArity(Vec<(String, Option<Variable>)>),
+    FixedArity(Vec<(Identifier, Option<Variable>)>),
 }
 
+#[derive(Debug)]
 pub struct TensorFromSizeModel;
 
 static VARIADIC_SIZE_SIGNATURE: LazyLock<Signature> = LazyLock::new(|| Signature::Variadic {
@@ -253,12 +263,12 @@ impl Model for TensorFromSizeModel {
     fn infer(
         &self,
         args: Vec<&Variable>,
-        kwargs: HashMap<String, &Variable>,
+        kwargs: HashMap<Identifier, &Variable>,
         _span: SourceSpan,
     ) -> Result<Shape> {
         let args = resolve_args(args, kwargs, &VARIADIC_SIZE_SIGNATURE);
         let size_tuple = args
-            .get("variadic")
+            .get(&intern("variadic"))
             .expect("variadic signature always has variadic tuple")
             .as_tuple()
             .expect("ditto");
@@ -278,13 +288,14 @@ impl Model for TensorFromSizeModel {
     }
 }
 
+#[derive(Debug)]
 pub struct RandIntModel;
 
 static RANDINT_SIGNATURE: LazyLock<Signature> = LazyLock::new(|| {
     Signature::FixedArity(vec![
-        ("low".to_string(), None),
-        ("high".to_string(), None),
-        ("size".to_string(), None),
+        (intern("low"), None),
+        (intern("high"), None),
+        (intern("size"), None),
     ])
 });
 
@@ -292,7 +303,7 @@ impl Model for RandIntModel {
     fn infer(
         &self,
         args: Vec<&Variable>,
-        kwargs: HashMap<String, &Variable>,
+        kwargs: HashMap<Identifier, &Variable>,
         _span: SourceSpan,
     ) -> Result<Shape> {
         let args = resolve_args(args, kwargs, &RANDINT_SIGNATURE);
@@ -304,13 +315,14 @@ impl Model for RandIntModel {
     }
 }
 
+#[derive(Debug)]
 pub struct BroadcastModel;
 
 impl Model for BroadcastModel {
     fn infer(
         &self,
         args: Vec<&Variable>,
-        kwargs: HashMap<String, &Variable>,
+        kwargs: HashMap<Identifier, &Variable>,
         span: SourceSpan,
     ) -> Result<Shape> {
         let args = resolve_args(args, kwargs, &INPUT_OTHER_SIGNATURE);
@@ -342,20 +354,17 @@ impl Model for BroadcastModel {
     }
 }
 
+#[derive(Debug)]
 pub struct MatmulModel;
 
-static INPUT_OTHER_SIGNATURE: LazyLock<Signature> = LazyLock::new(|| {
-    Signature::FixedArity(vec![
-        ("input".to_string(), None),
-        ("other".to_string(), None),
-    ])
-});
+static INPUT_OTHER_SIGNATURE: LazyLock<Signature> =
+    LazyLock::new(|| Signature::FixedArity(vec![(intern("input"), None), (intern("other"), None)]));
 
 impl Model for MatmulModel {
     fn infer(
         &self,
         args: Vec<&Variable>,
-        kwargs: HashMap<String, &Variable>,
+        kwargs: HashMap<Identifier, &Variable>,
         span: SourceSpan,
     ) -> Result<Shape> {
         // TODO: also deal with out (mutates)
@@ -463,9 +472,10 @@ impl Model for MatmulModel {
     }
 }
 
+#[derive(Debug)]
 pub struct PassthroughModel;
 static SINGLE_TENSOR_INPUT_SIGNATURE: LazyLock<Signature> =
-    LazyLock::new(|| Signature::FixedArity(vec![("input".to_string(), None)]));
+    LazyLock::new(|| Signature::FixedArity(vec![(intern("input"), None)]));
 
 // The base model for functions that do an element wise operation, preserving shape
 // This should be fine for most activation like functions
@@ -473,7 +483,7 @@ impl Model for PassthroughModel {
     fn infer(
         &self,
         args: Vec<&Variable>,
-        kwargs: HashMap<String, &Variable>,
+        kwargs: HashMap<Identifier, &Variable>,
         _span: SourceSpan,
     ) -> Result<Shape> {
         let args = resolve_args(args, kwargs, &SINGLE_TENSOR_INPUT_SIGNATURE);
@@ -485,12 +495,13 @@ impl Model for PassthroughModel {
     }
 }
 
+#[derive(Debug)]
 pub struct RdxModel;
 static RDX_SIGNATURE: LazyLock<Signature> = LazyLock::new(|| {
     Signature::FixedArity(vec![
-        ("input".to_string(), None),
-        ("dim".to_string(), Some(Variable::None)),
-        ("keepdim".to_string(), Some(Variable::None)), // TODO: handle this, default = False
+        (intern("input"), None),
+        (intern("dim"), Some(Variable::None)),
+        (intern("keepdim"), Some(Variable::None)), // TODO: handle this, default = False
     ])
 });
 
@@ -498,14 +509,14 @@ impl Model for RdxModel {
     fn infer(
         &self,
         args: Vec<&Variable>,
-        kwargs: HashMap<String, &Variable>,
+        kwargs: HashMap<Identifier, &Variable>,
         _span: SourceSpan,
     ) -> Result<Shape> {
         let args = resolve_args(args, kwargs, &RDX_SIGNATURE);
         let input_shape = get_args!(args, Matmul,
             input: as_shape_dims => "Tensor",
         )?;
-        let rdx_dims = args.get("dim").unwrap(); // bad?
+        let rdx_dims = args.get(&intern("dim")).unwrap(); // bad?
 
         let result_dims = match rdx_dims {
             Variable::DimVar(DimVar {
@@ -546,13 +557,14 @@ impl Model for RdxModel {
     }
 }
 
+#[derive(Debug)]
 pub struct ConcatModel;
 
 static CONCAT_SIGNATURE: LazyLock<Signature> = LazyLock::new(|| {
     Signature::FixedArity(vec![
-        ("tensors".to_string(), None),
+        (intern("tensors"), None),
         (
-            "dim".to_string(),
+            intern("dim"),
             Some(Variable::DimVar(DimVar {
                 kind: DimKind::Concrete(0),
             })),
@@ -564,7 +576,7 @@ impl Model for ConcatModel {
     fn infer(
         &self,
         args: Vec<&Variable>,
-        kwargs: HashMap<String, &Variable>,
+        kwargs: HashMap<Identifier, &Variable>,
         span: SourceSpan,
     ) -> Result<Shape> {
         let args = resolve_args(args, kwargs, &CONCAT_SIGNATURE);
@@ -622,20 +634,17 @@ impl Model for ConcatModel {
     }
 }
 
+#[derive(Debug)]
 pub struct ReshapeModel;
 
-static RESHAPE_SIGNATURE: LazyLock<Signature> = LazyLock::new(|| {
-    Signature::FixedArity(vec![
-        ("input".to_string(), None),
-        ("shape".to_string(), None),
-    ])
-});
+static RESHAPE_SIGNATURE: LazyLock<Signature> =
+    LazyLock::new(|| Signature::FixedArity(vec![(intern("input"), None), (intern("shape"), None)]));
 
 impl Model for ReshapeModel {
     fn infer(
         &self,
         args: Vec<&Variable>,
-        kwargs: HashMap<String, &Variable>,
+        kwargs: HashMap<Identifier, &Variable>,
         _span: SourceSpan,
     ) -> Result<Shape> {
         let args = resolve_args(args, kwargs, &RESHAPE_SIGNATURE);
@@ -694,13 +703,14 @@ impl Model for ReshapeModel {
     }
 }
 
+#[derive(Debug)]
 pub struct TransposeModel;
 
 static TRANSPOSE_SIGNATURE: LazyLock<Signature> = LazyLock::new(|| {
     Signature::FixedArity(vec![
-        ("input".to_string(), None),
-        ("dim0".to_string(), None),
-        ("dim1".to_string(), None),
+        (intern("input"), None),
+        (intern("dim0"), None),
+        (intern("dim1"), None),
     ])
 });
 
@@ -708,7 +718,7 @@ impl Model for TransposeModel {
     fn infer(
         &self,
         args: Vec<&Variable>,
-        kwargs: HashMap<String, &Variable>,
+        kwargs: HashMap<Identifier, &Variable>,
         _span: SourceSpan,
     ) -> Result<Shape> {
         let args = resolve_args(args, kwargs, &TRANSPOSE_SIGNATURE);
@@ -738,11 +748,12 @@ impl Model for TransposeModel {
     }
 }
 
-struct SignatureModel {
-    params: Vec<Parameter>,
+#[derive(Debug, Clone)]
+pub struct SignatureModel {
+    pub params: Vec<Parameter>,
     // TODO: in the future with the possibility of mutations,
     // doesn't necc need to have return annotation
-    returns: Option<Vec<Variable>>,
+    pub returns: Option<Vec<Variable>>,
 }
 
 impl SignatureModel {
@@ -758,7 +769,7 @@ impl Model for SignatureModel {
     fn infer(
         &self,
         args: Vec<&Variable>,
-        kwargs: HashMap<String, &Variable>,
+        kwargs: HashMap<Identifier, &Variable>,
         span: SourceSpan,
     ) -> Result<Shape> {
         let mut param_to_arg: HashMap<String, DimVar> = HashMap::new();
@@ -776,7 +787,7 @@ impl Model for SignatureModel {
                     let Some(param_v) = &param.1 else {
                         continue;
                     };
-                    let Some(arg_v) = kwargs.get(&param.0.to_string()) else {
+                    let Some(arg_v) = kwargs.get(&param.0) else {
                         continue;
                     };
                     (arg_v, param_v)

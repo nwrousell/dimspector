@@ -1,4 +1,6 @@
 use crate::analysis::dimvars::{DimKind, DimVar, parse_dimvar};
+use crate::ir::types::Identifier;
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum Variable {
@@ -7,6 +9,16 @@ pub enum Variable {
     Tensor(Shape),
     Tuple(Vec<Variable>),
     None,
+    ClassInstance(ClassInstance),
+}
+
+/// Represents a class instance with concrete dimension variable substitutions.
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct ClassInstance {
+    /// The identifier of the class
+    pub class_id: Identifier,
+    /// Mapping from parameter dimvars to concrete dimvars
+    pub substitutions: BTreeMap<DimVar, DimVar>,
 }
 
 impl Variable {
@@ -17,6 +29,7 @@ impl Variable {
             Variable::Tensor(_) => None,
             Variable::Tuple(_) => None,
             Variable::None => None,
+            Variable::ClassInstance(_) => None,
         }
     }
 
@@ -50,6 +63,7 @@ impl Variable {
                 }
             }
             Variable::None => None,
+            Variable::ClassInstance(_) => None,
         }
     }
 
@@ -75,6 +89,7 @@ impl Variable {
                 }
             }
             Variable::None => None,
+            Variable::ClassInstance(_) => None,
         }
     }
 

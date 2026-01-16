@@ -1,48 +1,35 @@
-use std::fmt;
+use petgraph::{Graph, visit::DfsPostOrder};
 
-use petgraph::visit::{DfsPostOrder, GraphRef, IntoNeighbors, Visitable};
-
-pub fn reverse_post_order<N, G>(g: G, entry: G::NodeId) -> Vec<N>
-where
-    N: Copy,
-    G: GraphRef + Visitable<NodeId = N> + IntoNeighbors<NodeId = N>,
-    G::NodeId: PartialEq,
-{
-    let mut postorder = Vec::new();
-    let mut dfs = DfsPostOrder::new(g, entry);
-    while let Some(node) = dfs.next(g) {
-        postorder.push(node);
-    }
-    postorder.reverse();
-    postorder
+pub fn indent(s: &str) -> String {
+    s.lines()
+        .map(|line| format!("  {}", line))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
-pub fn write_comma_separated<T: fmt::Display>(
-    f: &mut fmt::Formatter,
+pub fn write_comma_separated<T: std::fmt::Display>(
+    f: &mut std::fmt::Formatter<'_>,
     items: impl IntoIterator<Item = T>,
-) -> fmt::Result {
-    for (i, item) in items.into_iter().enumerate() {
-        if i > 0 {
-            write!(f, ", ")?;
+) -> std::fmt::Result {
+    let mut iter = items.into_iter();
+    if let Some(first) = iter.next() {
+        write!(f, "{}", first)?;
+        for item in iter {
+            write!(f, ", {}", item)?;
         }
-        write!(f, "{}", item)?;
     }
     Ok(())
 }
 
-pub fn write_newline_separated<T: fmt::Display>(
-    f: &mut fmt::Formatter,
-    items: impl IntoIterator<Item = T>,
-) -> fmt::Result {
-    for (i, item) in items.into_iter().enumerate() {
-        if i > 0 {
-            write!(f, "\n")?;
-        }
-        write!(f, "{}", item)?;
+pub fn reverse_post_order<N, E>(
+    graph: &Graph<N, E>,
+    start: petgraph::graph::NodeIndex,
+) -> Vec<petgraph::graph::NodeIndex> {
+    let mut dfs = DfsPostOrder::new(graph, start);
+    let mut result = Vec::new();
+    while let Some(node) = dfs.next(graph) {
+        result.push(node);
     }
-    Ok(())
-}
-
-pub fn indent(s: impl AsRef<str>) -> String {
-    textwrap::indent(s.as_ref(), "  ")
+    result.reverse();
+    result
 }

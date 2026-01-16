@@ -1,19 +1,29 @@
 use core::fmt;
 
-use crate::ir::types::{Constant, DimRange, Location, Slice};
+use crate::ir::types::{Constant, DimRange, Location, Slice, resolve};
 use crate::utils::{indent, write_comma_separated};
 
 use crate::ir::{
-    Function, Program,
-    types::{
-        BasicBlock, BasicBlockIdx, Binop, Expr, ExprKind, Parameter, Path, Statement, Terminator,
-    },
+    Class, File, Function, Project,
+    types::{BasicBlock, BasicBlockIdx, Binop, Expr, ExprKind, Parameter, Statement, Terminator},
 };
 
-impl fmt::Display for Program {
+impl fmt::Display for Project {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for file in &self.files {
+            write!(f, "{file}\n\n")?;
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Display for File {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for func in &self.functions {
             write!(f, "{func}\n\n")?;
+        }
+        for class in &self.classes {
+            write!(f, "{class}\n\n")?;
         }
         Ok(())
     }
@@ -21,7 +31,7 @@ impl fmt::Display for Program {
 
 impl fmt::Display for Function {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "def {}(", self.identifier)?;
+        write!(f, "def {}(", resolve(self.identifier))?;
         write_comma_separated(f, &self.params)?;
         write!(f, ")")?;
         if let Some(returns) = &self.returns {
@@ -37,7 +47,28 @@ impl fmt::Display for Function {
             let block = self.data(idx);
             write!(f, "  {}:\n", block_idx)?;
             let block_content = format!("{}", block);
-            write!(f, "{}", indent(indent(&block_content)))?;
+            write!(f, "{}", indent(&indent(&block_content)))?;
+        }
+
+        Ok(())
+    }
+}
+
+impl fmt::Display for Class {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "class {}:\n", resolve(self.identifier))?;
+
+        // Print methods
+        if !self.methods.is_empty() {
+            let mut first = true;
+            for (_, method) in &self.methods {
+                if !first {
+                    write!(f, "\n")?;
+                }
+                let method_content = format!("{}", method);
+                write!(f, "{}\n", indent(&method_content))?;
+                first = false;
+            }
         }
 
         Ok(())
@@ -52,7 +83,7 @@ impl fmt::Display for Location {
 
 impl fmt::Display for Parameter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)?;
+        write!(f, "{}", resolve(self.0))?;
         if let Some(annotation) = &self.1 {
             write!(f, ": {}", annotation)?;
         }
@@ -77,20 +108,19 @@ impl fmt::Display for BasicBlock {
 impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.kind {
-            ExprKind::Path(path) => write!(f, "{}", path),
+            ExprKind::Ident(name) => write!(f, "{}", resolve(*name)),
+            ExprKind::Attribute { value, attr } => {
+                write!(f, "{}.{}", value, resolve(*attr))
+            }
             ExprKind::Constant(constant) => write!(f, "{}", constant),
             ExprKind::Binop { left, right, op } => {
                 write!(f, "{} {} {}", left, op, right)
             }
             ExprKind::Call {
-                receiver,
                 function,
                 pos_args,
                 keyword_args,
             } => {
-                if let Some(recv) = receiver {
-                    write!(f, "{}.", recv)?;
-                }
                 write!(f, "{}", function)?;
                 write!(f, "(")?;
 
@@ -107,7 +137,7 @@ impl fmt::Display for Expr {
                     if !first {
                         write!(f, ", ")?;
                     }
-                    write!(f, "{}={}", key, value)?;
+                    write!(f, "{}={}", resolve(*key), value)?;
                     first = false;
                 }
 
@@ -204,18 +234,6 @@ impl fmt::Display for Terminator {
                 ),
             },
         }
-    }
-}
-
-impl fmt::Display for Path {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for (i, part) in self.parts().iter().enumerate() {
-            if i > 0 {
-                write!(f, ".")?;
-            }
-            write!(f, "{}", part)?;
-        }
-        Ok(())
     }
 }
 

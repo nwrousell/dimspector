@@ -346,6 +346,21 @@ impl PartialEq for DimVar {
 
 impl Eq for DimVar {}
 
+impl PartialOrd for DimVar {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for DimVar {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // Compare using canonical form
+        let self_canonical = self.canonical();
+        let other_canonical = other.canonical();
+        self_canonical.0.cmp(&other_canonical.0)
+    }
+}
+
 #[derive(Debug, Clone, Hash)]
 pub struct DimVar {
     pub kind: DimKind,
@@ -360,6 +375,24 @@ impl DimVar {
 
     pub fn kind(&self) -> DimKind {
         self.kind.clone()
+    }
+
+    pub fn binop(&self, other: &DimVar, op: crate::ir::types::Binop) -> crate::analysis::Variable {
+        use crate::analysis::Variable;
+        use crate::ir::types::Binop;
+
+        match op {
+            Binop::Add => Variable::DimVar(self.clone() + other.clone()),
+            Binop::Sub => Variable::DimVar(self.clone() - other.clone()),
+            Binop::Mult => Variable::DimVar(self.clone() * other.clone()),
+            Binop::FloorDiv => match (self.kind(), other.kind()) {
+                (DimKind::Concrete(c1), DimKind::Concrete(c2)) => Variable::DimVar(DimVar::new(
+                    DimKind::Concrete(num_integer::Integer::div_floor(&c1, &c2)),
+                )),
+                _ => Variable::Top,
+            },
+            _ => Variable::Top,
+        }
     }
 
     pub fn div(&self, rhs: &Self) -> Result<Self> {
