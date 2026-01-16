@@ -11,8 +11,8 @@ use ruff_python_ast::{
     Expr as ASTExpr, ExprAttribute, ExprBinOp, ExprCall, ExprCompare, ExprEllipsisLiteral,
     ExprFString, ExprList, ExprName, ExprNumberLiteral, ExprSlice, ExprStringLiteral,
     ExprSubscript, ExprTuple, ExprUnaryOp, Keyword, Number, Stmt as ASTStmt, StmtAssign,
-    StmtAugAssign, StmtClassDef, StmtExpr, StmtFor, StmtFunctionDef, StmtIf, StmtReturn, StmtWhile,
-    StmtWith, UnaryOp,
+    StmtAugAssign, StmtClassDef, StmtExpr, StmtFor, StmtFunctionDef, StmtGlobal, StmtIf,
+    StmtReturn, StmtWhile, StmtWith, UnaryOp,
 };
 use ruff_text_size::TextRange;
 use std::path::PathBuf;
@@ -585,6 +585,10 @@ impl LowerBody {
                     self.add_statement(expr, None, range, None);
                 }
                 self.lower_body(&body)?
+            }
+
+            ASTStmt::Global(StmtGlobal { names, .. }) => {
+                // globals not supported right now
             }
 
             _ => todo!("unhandled statement: {stmt:?}"),
