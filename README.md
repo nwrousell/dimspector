@@ -3,13 +3,25 @@ A development tool that statically infers tensor shapes for PyTorch programs to 
 
   
 
-__This project is still largely in development; the set of Python/PyTorch programs dimspector can analyze is currently patchy but growing.__
+__This project is still in development. The subset of Python it can handle is patchy, but growing, and a VSCode extension and general LSP implementation will be available soon.__
 
-![VSCode Usage](assets/vscode_usage.png)
+![VSCode Usage](assets/vscode_usage2.png)
+
+## How it works
+1. Add tensor shape annotations to parameters using [jaxtyping](https://github.com/patrick-kidger/jaxtyping/) (see above example). 
+2. Get inlay hints for inferred shapes and diagnostics for shape mismatches before running your code. 
+
+### Dimension Variable Symbolic Expressions
+```python
+def concat_features(x: Float[Tensor, "b n d"], y: Float[Tensor, "b n e"]) -> Float[Tensor, "b n d+e"]:
+    return torch.cat([x, y], dim=-1)
+```
+Supports symbolic (ex. `batch`), concrete (ex. `64`), addition (`d_model-1`), and multiplication (ex. `batch*d_model`) dimension variables. 
+
 
 ## Usage
 
-### Running Analysis
+### Run the analysis
 
 ```
 # run standalone check on project or file
@@ -19,7 +31,7 @@ cargo run -- check path/to/project/root
 cargo run -- server
 ```
 
-### Running tests
+### Run tests
 ```
 cargo insta test
 ```
