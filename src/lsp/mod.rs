@@ -257,6 +257,7 @@ impl Backend {
 
         let client = self.client.clone();
         let dimspector = self.dimspector.clone();
+        let uri_string = uri.as_str().to_string();
 
         // Run analysis in blocking task
         let (diagnostics, error_count) = tokio::task::spawn_blocking(move || {
@@ -287,7 +288,7 @@ impl Backend {
                     // Convert ShapeErrors to LSP Diagnostics
                     let diagnostics: Vec<_> = errors
                         .into_iter()
-                        .filter_map(|(_, error)| error.to_diagnostic(&content))
+                        .filter_map(|(_, error)| error.to_diagnostic(&content, &uri_string))
                         .collect();
                     log::info!(
                         "Analysis complete: {} errors found in {}",
