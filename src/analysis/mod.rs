@@ -13,7 +13,7 @@ pub use types::{Shape, Variable};
 
 pub use crate::analysis::dimvars::{DimKind, DimVar};
 use crate::analysis::models::{Model, ModelContext, SignatureModel};
-use crate::analysis::types::{ClassInstance, DimSlice};
+use crate::analysis::types::{ClassInstance, Collection, DimSlice};
 use crate::ir::types::{Binop, Constant, ExprKind, Location, Slice, Type};
 use crate::ir::{Class, File, Function, Project};
 use crate::ir::{Expr, Identifier, Parameter, Statement, Terminator, intern, resolve};
@@ -52,7 +52,7 @@ pub struct GlobalAnalysis {
 }
 
 pub(crate) fn vars_to_inlay(vars: &HashSet<Variable>) -> Option<String> {
-    if vars.len() == 0 {
+    if vars.is_empty() {
         None
     } else if vars.len() == 1 {
         let var = vars.iter().next().unwrap();
@@ -287,6 +287,8 @@ impl FunctionAnalysis {
                 self.eval_index(domain, receiver, index, expr.span, global)
             }
             ExprKind::Tuple(exprs) => self.eval_tuple(domain, exprs, global),
+            ExprKind::List(exprs) => self.eval_list(domain, exprs, global),
+            ExprKind::Dict(items) => self.eval_dict(domain, items, global),
         }
     }
 
@@ -332,11 +334,25 @@ impl FunctionAnalysis {
                     // other should be some number, will retain tensor operand shape
                     Variable::Tensor(shape.clone())
                 }
-                (Variable::Tuple(l_vars), Variable::Tuple(r_vars)) => match op {
+                (
+                    Variable::Collection(Collection::Tuple(l_vars)),
+                    Variable::Collection(Collection::Tuple(r_vars)),
+                ) => match op {
                     Binop::Add => {
                         let mut out = l_vars.clone();
                         out.extend(r_vars.iter().cloned());
-                        Variable::Tuple(out)
+                        Variable::Collection(Collection::Tuple(out))
+                    }
+                    _ => Variable::Top,
+                },
+                (
+                    Variable::Collection(Collection::List(l_vars)),
+                    Variable::Collection(Collection::List(r_vars)),
+                ) => match op {
+                    Binop::Add => {
+                        let mut out = l_vars.clone();
+                        out.extend(r_vars.iter().cloned());
+                        Variable::Collection(Collection::List(out))
                     }
                     _ => Variable::Top,
                 },
@@ -421,9 +437,9 @@ impl FunctionAnalysis {
         match vars {
             Some(vars) => {
                 let shape_dims: Vec<_> = vars.iter().filter_map(|v| v.as_shape_dims()).collect();
-                let tuples = shape_dims
-                    .into_iter()
-                    .map(|ds| Variable::Tuple(ds.into_iter().map(Variable::DimVar).collect()));
+                let tuples = shape_dims.into_iter().map(|ds| {
+                    Collection::tup_from_elts(ds.into_iter().map(Variable::DimVar).collect())
+                });
                 let set = HashSet::from_iter(tuples);
                 Ok(set)
             }
@@ -448,7 +464,83 @@ impl FunctionAnalysis {
             .map(|set| set.iter().cloned())
             .multi_cartesian_product();
 
-        Ok(HashSet::from_iter(products.map(Variable::Tuple)))
+        Ok(HashSet::from_iter(
+            products.map(|e| Variable::Collection(Collection::Tuple(e))),
+        ))
+    }
+
+    fn eval_list(
+        &mut self,
+        domain: &AnalysisDomain,
+        exprs: &[Expr],
+        global: &GlobalAnalysis,
+    ) -> Result<HashSet<Variable>> {
+        let results = exprs
+            .iter()
+            .map(|e| self.eval_expr(domain, e, global))
+            .collect::<Result<Vec<HashSet<Variable>>>>()?;
+
+        let products = results
+            .iter()
+            .map(|set| set.iter().cloned())
+            .multi_cartesian_product();
+
+        Ok(HashSet::from_iter(
+            products.map(|e| Variable::Collection(Collection::List(e))),
+        ))
+    }
+
+    fn eval_dict(
+        &mut self,
+        domain: &AnalysisDomain,
+        exprs: &[(Expr, Expr)],
+        global: &GlobalAnalysis,
+    ) -> Result<HashSet<Variable>> {
+        use crate::analysis::types::DictKey;
+        use std::collections::BTreeMap;
+
+        let mut kv_results: Vec<(DictKey, HashSet<Variable>)> = Vec::new();
+
+        for (key_expr, value_expr) in exprs {
+            let dict_key = match &key_expr.kind {
+                ExprKind::Constant(Constant::Int(i)) => Some(DictKey::Int(*i as i64)),
+                ExprKind::Constant(Constant::Str(s)) => Some(DictKey::Str(s.clone())),
+                _ => None,
+            };
+
+            if let Some(key) = dict_key {
+                let values = self.eval_expr(domain, value_expr, global)?;
+                kv_results.push((key, values));
+            }
+            // Skip non-constant keys (can't track them in abstract interpretation)
+        }
+
+        // If no valid keys, return empty set or Top
+        if kv_results.is_empty() {
+            return Ok(HashSet::from([Variable::Top]));
+        }
+
+        // Get cartesian product of all possible value combinations
+        let value_sets: Vec<&HashSet<Variable>> =
+            kv_results.iter().map(|(_, values)| values).collect();
+
+        let value_products = value_sets
+            .iter()
+            .map(|set| set.iter())
+            .multi_cartesian_product();
+
+        // Build a BTreeMap for each combination of values
+        let mut result = HashSet::new();
+        for value_combination in value_products {
+            let mut map = BTreeMap::new();
+            for (i, value_var) in value_combination.iter().enumerate() {
+                let key = kv_results[i].0.clone();
+                map.insert(key, (*value_var).clone());
+            }
+            result.insert(Variable::Collection(Collection::Dict(map)));
+        }
+
+        Ok(result)
     }
 
     /// Enumerates possible arg/kwargs and dispatches call to correct model.
@@ -732,8 +824,8 @@ impl FunctionAnalysis {
                         continue 'possible_slices_loop;
                     }
                 }
-                Variable::Tuple(elts) => {
-                    if let Some(result) = self.eval_tuple_index(elts, &index) {
+                Variable::Collection(col) => {
+                    if let Some(result) = col.read_at_index(&index) {
                         set.insert(result);
                     } else {
                         set.insert(Variable::Top);
@@ -882,47 +974,6 @@ impl FunctionAnalysis {
         }
 
         Ok(Some(Variable::Tensor(Shape(out_dims))))
-    }
-
-    /// Grabs an element or slice out of tuple_elts based on index (if it's an index or slice).
-    /// Currently only handling case where there is a single index/slice.
-    /// Helper for eval_index.
-    fn eval_tuple_index(
-        &self,
-        tuple_elts: &[Variable],
-        index_or_slices: &[&Either<Variable, DimSlice>],
-    ) -> Option<Variable> {
-        assert!(index_or_slices.len() == 1);
-        match index_or_slices.first().unwrap() {
-            Either::Left(var) => {
-                if let Some(c) = var.as_concrete_dimvar() {
-                    tuple_elts.get(c as usize).cloned()
-                } else {
-                    Some(Variable::Top)
-                }
-            }
-            Either::Right(DimSlice { lower, upper }) => {
-                let lower = if let Some(l) = lower {
-                    l.as_concrete_dimvar().map(|c| c as usize)
-                } else {
-                    Some(0)
-                };
-
-                let upper = if let Some(u) = upper {
-                    u.as_concrete_dimvar().map(|c| c as usize)
-                } else {
-                    Some(tuple_elts.len())
-                };
-
-                match (lower, upper) {
-                    (Some(l), Some(u)) => {
-                        let tuple = Variable::Tuple(tuple_elts[l..u].to_vec());
-                        Some(tuple)
-                    }
-                    _ => Some(Variable::Top),
-                }
-            }
-        }
     }
 
     /// Eval expr, updating target if this statement is an assignment.
@@ -1215,15 +1266,35 @@ impl ClassAnalysis {
                 }
             }
 
-            // Tuple -> recur for each element
-            (Variable::Tuple(param_vars), Variable::Tuple(arg_vars)) => {
-                if param_vars.len() == arg_vars.len() {
-                    for (param_elem, arg_elem) in param_vars.iter().zip(arg_vars.iter()) {
-                        if let Some(recursive_subs) =
-                            self.extract_substitutions_from_pair(param_elem, arg_elem)?
-                        {
-                            substitutions.extend(recursive_subs);
+            // Collection -> recur for each element/value
+            (Variable::Collection(param_col), Variable::Collection(arg_col)) => {
+                match (param_col, arg_col) {
+                    (Collection::Tuple(param_vars), Collection::Tuple(arg_vars))
+                    | (Collection::List(param_vars), Collection::List(arg_vars)) => {
+                        if param_vars.len() == arg_vars.len() {
+                            for (param_elem, arg_elem) in param_vars.iter().zip(arg_vars.iter()) {
+                                if let Some(recursive_subs) =
+                                    self.extract_substitutions_from_pair(param_elem, arg_elem)?
+                                {
+                                    substitutions.extend(recursive_subs);
+                                }
+                            }
                         }
+                    }
+                    (Collection::Dict(param_map), Collection::Dict(arg_map)) => {
+                        // Match keys and recursively extract from values
+                        for (key, param_val) in param_map {
+                            if let Some(arg_val) = arg_map.get(key) {
+                                if let Some(recursive_subs) =
+                                    self.extract_substitutions_from_pair(param_val, arg_val)?
+                                {
+                                    substitutions.extend(recursive_subs);
+                                }
+                            }
+                        }
+                    }
+                    _ => {
+                        // Mismatched collection types
                     }
                 }
             }
@@ -1316,13 +1387,31 @@ impl ClassAnalysis {
                     .collect();
                 Variable::Tensor(Shape(substituted_dims))
             }
-            Variable::Tuple(vars) => {
-                // Recursively substitute in tuple elements
-                let substituted_vars: Vec<Variable> = vars
-                    .iter()
-                    .map(|v| Self::substitute_variable(v, substitutions))
-                    .collect();
-                Variable::Tuple(substituted_vars)
+            Variable::Collection(col) => {
+                let sub_col = match col {
+                    Collection::Tuple(vars) => {
+                        let substituted_vars: Vec<Variable> = vars
+                            .iter()
+                            .map(|v| Self::substitute_variable(v, substitutions))
+                            .collect();
+                        Collection::Tuple(substituted_vars)
+                    }
+                    Collection::List(vars) => {
+                        let substituted_vars: Vec<Variable> = vars
+                            .iter()
+                            .map(|v| Self::substitute_variable(v, substitutions))
+                            .collect();
+                        Collection::List(substituted_vars)
+                    }
+                    Collection::Dict(map) => {
+                        let substituted_map: BTreeMap<_, _> = map
+                            .iter()
+                            .map(|(k, v)| (k.clone(), Self::substitute_variable(v, substitutions)))
+                            .collect();
+                        Collection::Dict(substituted_map)
+                    }
+                };
+                Variable::Collection(sub_col)
             }
             Variable::ClassInstance(_) => {
                 // TODO: Handle nested class instances

@@ -7,6 +7,7 @@ use itertools::Itertools;
 use miette::SourceSpan;
 
 use crate::analysis::errors::ShapeError;
+use crate::analysis::types::Collection;
 use crate::analysis::{DimKind, DimVar, Shape, Variable};
 use crate::ir::{Function, Identifier, Parameter, intern, resolve};
 
@@ -213,7 +214,7 @@ pub fn resolve_args(
         Signature::Variadic { kwargs_defaults } => {
             mapping.insert(
                 intern("variadic"),
-                Variable::Tuple(args.into_iter().map(|v| v.clone()).collect()),
+                Collection::tup_from_elts(args.into_iter().map(|v| v.clone()).collect()),
             );
 
             for (name, default) in kwargs_defaults.into_iter() {
@@ -530,7 +531,7 @@ impl Model for RdxModel {
                 }
                 _ => todo!(),
             },
-            Variable::Tuple(vars) => {
+            Variable::Collection(Collection::Tuple(vars) | Collection::List(vars)) => {
                 let vars_conc: Vec<i64> = vars
                     .iter()
                     .map(|var| {
