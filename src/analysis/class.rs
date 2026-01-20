@@ -301,7 +301,10 @@ impl ClassAnalysis {
     }
 
     /// Apply DimVar substitutions to a Variable, recursively substituting DimVars in shapes and tuples.
-    fn substitute_variable(var: &Variable, substitutions: &BTreeMap<DimVar, DimVar>) -> Variable {
+    pub fn substitute_variable(
+        var: &Variable,
+        substitutions: &BTreeMap<DimVar, DimVar>,
+    ) -> Variable {
         match var {
             Variable::DimVar(dv) => {
                 // Substitute the DimVar using the map

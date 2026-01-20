@@ -3,7 +3,8 @@ use itertools::Either;
 use crate::analysis::dimvars::{DimKind, DimVar, parse_dimvar};
 use crate::ir::Expr;
 use crate::ir::types::Identifier;
-use std::collections::BTreeMap;
+use anyhow::Result;
+use std::collections::{BTreeMap, HashMap};
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum Variable {
@@ -123,9 +124,9 @@ impl Variable {
         }
     }
 
-    pub fn as_tuple(&self) -> Option<&Vec<Variable>> {
+    pub fn as_vec(&self) -> Option<&Vec<Variable>> {
         match self {
-            Variable::Collection(Collection::Tuple(vars)) => Some(vars),
+            Variable::Collection(Collection::Tuple(vars) | Collection::List(vars)) => Some(vars),
             _ => None,
         }
     }
@@ -197,6 +198,55 @@ impl Variable {
             }
         } else {
             None
+        }
+    }
+
+    /// Apply DimVar substitutions to a Variable, recursively substituting DimVars in shapes and collections.
+    pub fn substitute(&self, substitutions: &HashMap<String, DimVar>) -> Result<Variable> {
+        match self {
+            Variable::DimVar(dv) => {
+                // Substitute the DimVar
+                let substituted = dv.substitute(substitutions)?;
+                Ok(Variable::DimVar(substituted))
+            }
+            Variable::Tensor(shape) => {
+                // Recursively substitute each DimVar in the shape
+                let substituted_dims: Result<Vec<DimVar>> = shape
+                    .0
+                    .iter()
+                    .map(|dv| dv.substitute(substitutions))
+                    .collect();
+                Ok(Variable::Tensor(Shape(substituted_dims?)))
+            }
+            Variable::Collection(col) => {
+                let sub_col = match col {
+                    Collection::Tuple(vars) => {
+                        let substituted_vars: Result<Vec<Variable>> =
+                            vars.iter().map(|v| v.substitute(substitutions)).collect();
+                        Collection::Tuple(substituted_vars?)
+                    }
+                    Collection::List(vars) => {
+                        let substituted_vars: Result<Vec<Variable>> =
+                            vars.iter().map(|v| v.substitute(substitutions)).collect();
+                        Collection::List(substituted_vars?)
+                    }
+                    Collection::Dict(map) => {
+                        let substituted_map: Result<BTreeMap<_, _>> = map
+                            .iter()
+                            .map(|(k, v)| {
+                                v.substitute(substitutions).map(|sub_v| (k.clone(), sub_v))
+                            })
+                            .collect();
+                        Collection::Dict(substituted_map?)
+                    }
+                };
+                Ok(Variable::Collection(sub_col))
+            }
+            Variable::ClassInstance(_) => {
+                // TODO: Handle nested class instances
+                Ok(self.clone())
+            }
+            Variable::Top | Variable::None => Ok(self.clone()),
         }
     }
 }

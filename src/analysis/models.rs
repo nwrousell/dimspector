@@ -1,5 +1,8 @@
 use core::panic;
-use std::{collections::HashMap, sync::LazyLock};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::LazyLock,
+};
 
 use anyhow::{Result, anyhow};
 use itertools::EitherOrBoth::{self, Both, Left, Right};
@@ -8,7 +11,7 @@ use miette::SourceSpan;
 
 use crate::analysis::errors::ShapeError;
 use crate::analysis::types::Collection;
-use crate::analysis::{DimKind, DimVar, Shape, Variable};
+use crate::analysis::{ClassAnalysis, DimKind, DimVar, Shape, Variable};
 use crate::ir::{Function, Identifier, Parameter, intern, resolve};
 
 /// Holds spans for positional and keyword arguments
@@ -141,7 +144,7 @@ pub trait Model: std::fmt::Debug + Send + Sync {
         kwargs: HashMap<Identifier, &Variable>,
         span: SourceSpan,
         arg_spans: &ArgSpans,
-    ) -> Result<Shape>;
+    ) -> Result<Variable>;
 }
 
 impl ModelContext {
@@ -346,12 +349,12 @@ impl Model for TensorFromSizeModel {
         kwargs: HashMap<Identifier, &Variable>,
         _span: SourceSpan,
         _arg_spans: &ArgSpans,
-    ) -> Result<Shape> {
+    ) -> Result<Variable> {
         let args = resolve_args(args, kwargs, &VARIADIC_SIZE_SIGNATURE);
         let size_tuple = args
             .get(&intern("variadic"))
             .expect("variadic signature always has variadic tuple")
-            .as_tuple()
+            .as_vec()
             .expect("ditto");
 
         let dimvars = size_tuple
@@ -365,7 +368,7 @@ impl Model for TensorFromSizeModel {
             })
             .collect::<Result<Vec<DimVar>>>()?;
 
-        Ok(Shape(dimvars))
+        Ok(Variable::Tensor(Shape(dimvars)))
     }
 }
 
@@ -387,13 +390,13 @@ impl Model for RandIntModel {
         kwargs: HashMap<Identifier, &Variable>,
         _span: SourceSpan,
         _arg_spans: &ArgSpans,
-    ) -> Result<Shape> {
+    ) -> Result<Variable> {
         let args = resolve_args(args, kwargs, &RANDINT_SIGNATURE);
         let size = get_args!(args, RandInt,
             size: as_shape_dims => "Tuple",
         )?;
 
-        Ok(Shape(size))
+        Ok(Variable::Tensor(Shape(size)))
     }
 }
 
@@ -407,7 +410,7 @@ impl Model for BroadcastModel {
         kwargs: HashMap<Identifier, &Variable>,
         span: SourceSpan,
         _arg_spans: &ArgSpans,
-    ) -> Result<Shape> {
+    ) -> Result<Variable> {
         let args = resolve_args(args, kwargs, &INPUT_OTHER_SIGNATURE);
         let (l_shape, r_shape) = get_args!(args, Matmul,
             input: as_shape_dims => "Tensor",
@@ -449,7 +452,7 @@ impl Model for BroadcastModel {
             out_shape.push(next_dim);
         }
         out_shape.reverse();
-        Ok(Shape(out_shape))
+        Ok(Variable::Tensor(Shape(out_shape)))
     }
 }
 
@@ -466,7 +469,7 @@ impl Model for MatmulModel {
         kwargs: HashMap<Identifier, &Variable>,
         span: SourceSpan,
         _arg_spans: &ArgSpans,
-    ) -> Result<Shape> {
+    ) -> Result<Variable> {
         // TODO: also deal with out (mutates)
         let args = resolve_args(args, kwargs, &INPUT_OTHER_SIGNATURE);
         let (input_shape, other_shape) = get_args!(args, Matmul,
@@ -499,25 +502,28 @@ impl Model for MatmulModel {
             // dot product
             (1, 1) => {
                 check_matmul_dims(&input_shape[0], &other_shape[0])?;
-                Ok(Shape(vec![])) // Scalar result
+                Ok(Variable::Tensor(Shape(vec![]))) // Scalar result
             }
 
             // matrix-matrix
             (2, 2) => {
                 check_matmul_dims(&input_shape[1], &other_shape[0])?;
-                Ok(Shape(vec![input_shape[0].clone(), other_shape[1].clone()]))
+                Ok(Variable::Tensor(Shape(vec![
+                    input_shape[0].clone(),
+                    other_shape[1].clone(),
+                ])))
             }
 
             // prepend 1, multiply, remove prepended dim
             (1, 2) => {
                 check_matmul_dims(&input_shape[0], &other_shape[0])?;
-                Ok(Shape(vec![other_shape[1].clone()]))
+                Ok(Variable::Tensor(Shape(vec![other_shape[1].clone()])))
             }
 
             // matrix-vector product
             (2, 1) => {
                 check_matmul_dims(&input_shape[1], &other_shape[0])?;
-                Ok(Shape(vec![input_shape[0].clone()]))
+                Ok(Variable::Tensor(Shape(vec![input_shape[0].clone()])))
             }
 
             // batched matrix multiply
@@ -581,7 +587,7 @@ impl Model for MatmulModel {
                     result_dims.pop();
                 }
 
-                Ok(Shape(result_dims))
+                Ok(Variable::Tensor(Shape(result_dims)))
             }
 
             _ => unreachable!("above cases are exhaustive"),
@@ -603,13 +609,13 @@ impl Model for PassthroughModel {
         kwargs: HashMap<Identifier, &Variable>,
         _span: SourceSpan,
         _arg_spans: &ArgSpans,
-    ) -> Result<Shape> {
+    ) -> Result<Variable> {
         let args = resolve_args(args, kwargs, &SINGLE_TENSOR_INPUT_SIGNATURE);
         let input_shape = get_args!(args, Eltwise,
             input: as_shape => "Tensor",
         )?;
 
-        Ok(input_shape)
+        Ok(Variable::Tensor(input_shape))
     }
 }
 
@@ -630,7 +636,7 @@ impl Model for RdxModel {
         kwargs: HashMap<Identifier, &Variable>,
         _span: SourceSpan,
         _arg_spans: &ArgSpans,
-    ) -> Result<Shape> {
+    ) -> Result<Variable> {
         let args = resolve_args(args, kwargs, &RDX_SIGNATURE);
         let input_shape = get_args!(args, Matmul,
             input: as_shape_dims => "Tensor",
@@ -645,10 +651,16 @@ impl Model for RdxModel {
             Variable::DimVar(DimVar {
                 kind: DimKind::Concrete(dim),
             }) => match dim {
-                -1 => input_shape[..input_shape.len() - 1].to_vec(),
                 dim if 0 <= *dim && *dim < input_shape.len() as i64 => {
                     let mut res = input_shape.clone();
                     res.remove(*dim as usize);
+                    res
+                }
+                dim if *dim < 0 && *dim >= -(input_shape.len() as i64) => {
+                    // Handle negative indices: -1 is last, -2 is second-to-last, etc.
+                    let positive_idx = (input_shape.len() as i64 + dim) as usize;
+                    let mut res = input_shape.clone();
+                    res.remove(positive_idx);
                     res
                 }
                 _ => todo!(),
@@ -676,7 +688,7 @@ impl Model for RdxModel {
             _ => todo!(),
         };
 
-        Ok(Shape(result_dims))
+        Ok(Variable::Tensor(Shape(result_dims)))
     }
 }
 
@@ -702,10 +714,10 @@ impl Model for ConcatModel {
         kwargs: HashMap<Identifier, &Variable>,
         span: SourceSpan,
         _arg_spans: &ArgSpans,
-    ) -> Result<Shape> {
+    ) -> Result<Variable> {
         let args = resolve_args(args, kwargs, &CONCAT_SIGNATURE);
         let (tensors, dim) = get_args!(args, Concat,
-            tensors: as_tuple => "Tuple",
+            tensors: as_vec => "Tuple",
             dim: as_concrete_dimvar => "Int",
         )?;
 
@@ -754,7 +766,7 @@ impl Model for ConcatModel {
                     .collect::<Result<Vec<_>>>()
             })?;
 
-        Ok(Shape(res))
+        Ok(Variable::Tensor(Shape(res)))
     }
 }
 
@@ -771,7 +783,7 @@ impl Model for ReshapeModel {
         kwargs: HashMap<Identifier, &Variable>,
         span: SourceSpan,
         _arg_spans: &ArgSpans,
-    ) -> Result<Shape> {
+    ) -> Result<Variable> {
         let args = resolve_args(args, kwargs, &RESHAPE_SIGNATURE);
         let (src_shape, tgt_shape) = get_args!(args, Concat,
             input: as_shape_dims => "Tensor",
@@ -820,12 +832,12 @@ impl Model for ReshapeModel {
         if tgt_shape_prod != src_shape_prod {
             return Err(anyhow!(ShapeError::BadReshape {
                 src: Shape(src_shape),
-                tgt: Shape(tgt_shape),
+                tgt: Shape(tgt_shape.clone()),
                 span,
             }));
         }
 
-        Ok(Shape(tgt_shape))
+        Ok(Variable::Tensor(Shape(tgt_shape)))
     }
 }
 
@@ -843,12 +855,12 @@ impl Model for TensorReshapeModel {
         kwargs: HashMap<Identifier, &Variable>,
         span: SourceSpan,
         arg_spans: &ArgSpans,
-    ) -> Result<Shape> {
+    ) -> Result<Variable> {
         let resolved_args = resolve_args(args, kwargs, &TENSOR_RESHAPE_SIGNATURE);
         let variadic_tuple = resolved_args
             .get(&intern("variadic"))
             .expect("variadic signature always has variadic tuple")
-            .as_tuple()
+            .as_vec()
             .expect("variadic should be tuple");
 
         let input = variadic_tuple.first().ok_or_else(|| {
@@ -888,7 +900,7 @@ impl Model for TransposeModel {
         kwargs: HashMap<Identifier, &Variable>,
         _span: SourceSpan,
         _arg_spans: &ArgSpans,
-    ) -> Result<Shape> {
+    ) -> Result<Variable> {
         let args = resolve_args(args, kwargs, &TRANSPOSE_SIGNATURE);
         let (mut input_dims, dim0, dim1) = get_args!(args, Transpose,
             input: as_shape_dims => "Tensor",
@@ -912,7 +924,7 @@ impl Model for TransposeModel {
 
         input_dims.swap(dim0, dim1);
 
-        Ok(Shape(input_dims))
+        Ok(Variable::Tensor(Shape(input_dims)))
     }
 }
 
@@ -941,7 +953,7 @@ impl Model for SignatureModel {
         kwargs: HashMap<Identifier, &Variable>,
         span: SourceSpan,
         arg_spans: &ArgSpans,
-    ) -> Result<Shape> {
+    ) -> Result<Variable> {
         // Track dimvar bindings with the span, shape, and param name where they were first bound
         // (DimVar, SourceSpan, Option<Shape>, param_name) - shape is None for single DimVar args
         let mut param_to_arg: HashMap<String, (DimVar, SourceSpan, Option<Shape>, String)> =
@@ -1136,23 +1148,17 @@ impl Model for SignatureModel {
             }
         }
 
-        // Handle return type
-        let ret_shape = {
-            let Some(returns) = &self.returns else {
-                return Err(anyhow!(ShapeError::UninferrableCall {}));
-            };
-
-            match &returns[0] {
-                Variable::Tensor(Shape(shape)) => shape,
-                _ => return Err(anyhow!(ShapeError::UninferrableCall {})),
-            }
+        let Some(ret_var) = &self.returns else {
+            // TODO: we need to be able to use our analysis inferred return shape here
+            return Err(anyhow!(ShapeError::UninferrableCall {}));
         };
 
-        let ret_shape = ret_shape
-            .iter()
-            .map(|dv| dv.substitute(&substitution_map))
-            .collect::<Result<Vec<_>>>()?;
+        let ret_var = ret_var
+            .first()
+            .ok_or_else(|| anyhow!(ShapeError::UninferrableCall {}))?;
 
-        Ok(Shape(ret_shape))
+        let substituted_ret = ret_var.substitute(&substitution_map)?;
+
+        Ok(substituted_ret)
     }
 }

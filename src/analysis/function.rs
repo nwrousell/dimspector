@@ -126,7 +126,7 @@ impl FunctionAnalysis {
                             span,
                             &arg_spans,
                         )?;
-                        Variable::Tensor(out_shape)
+                        out_shape
                     } else {
                         let out_shape = global.models.torch.broadcast.infer(
                             vec![l_var, r_var],
@@ -134,7 +134,7 @@ impl FunctionAnalysis {
                             span,
                             &arg_spans,
                         )?;
-                        Variable::Tensor(out_shape)
+                        out_shape
                     }
                 }
                 (Variable::Tensor(shape), _) | (_, Variable::Tensor(shape)) => {
@@ -513,7 +513,7 @@ impl FunctionAnalysis {
                             // Use the signature model to infer the result
                             let result_shape =
                                 signature_model.infer(args, kwargs, span, arg_spans)?;
-                            out_vars.insert(Variable::Tensor(result_shape));
+                            out_vars.insert(result_shape);
                         }
                     }
                 } else {
@@ -592,9 +592,7 @@ impl FunctionAnalysis {
                     if any_top {
                         out_vars.insert(Variable::Top);
                     } else {
-                        out_vars.insert(Variable::Tensor(
-                            model.infer(args, kwargs, span, arg_spans)?,
-                        ));
+                        out_vars.insert(model.infer(args, kwargs, span, arg_spans)?);
                     }
                 }
             }

@@ -9,7 +9,7 @@ mod types;
 
 use std::collections::{HashMap, HashSet};
 
-pub use types::{Shape, Variable};
+pub use types::{Collection, Shape, Variable};
 
 pub use crate::analysis::dimvars::{DimKind, DimVar};
 use crate::ir::{Class, Function, Identifier, Project};
