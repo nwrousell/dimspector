@@ -384,7 +384,15 @@ impl FunctionAnalysis {
                 &arg_spans,
                 global,
             ),
-            _ => self.eval_function(function, &args_sets, &kwargs_sets, span, &arg_spans, global),
+            _ => self.eval_function(
+                domain,
+                function,
+                &args_sets,
+                &kwargs_sets,
+                span,
+                &arg_spans,
+                global,
+            ),
         }
     }
 
@@ -523,6 +531,7 @@ impl FunctionAnalysis {
 
     fn eval_function(
         &mut self,
+        domain: &AnalysisDomain,
         function: &Expr,
         args_sets: &[HashSet<Variable>],
         kwargs_sets: &[(Identifier, HashSet<Variable>)],
@@ -532,10 +541,41 @@ impl FunctionAnalysis {
     ) -> Result<HashSet<Variable>> {
         let mut out_vars = HashSet::new();
 
-        // Resolve function name - for now assume it's an ident or attribute chain
-        let func_name = self.expr_to_dot_string(function, global);
+        let (func_name, receiver_args) = if let ExprKind::Attribute { value, attr } = &function.kind
+        {
+            let receiver_vars = self.eval_expr(domain, value, global)?;
 
-        let args_products = args_sets.iter().multi_cartesian_product();
+            if receiver_vars
+                .iter()
+                .any(|v| matches!(v, Variable::Tensor(_)))
+            {
+                let torch_func_name = format!("torch.Tensor.{}", resolve(*attr));
+
+                if global.models.resolve(&torch_func_name).is_some() {
+                    // routing
+                    (torch_func_name, Some(receiver_vars))
+                } else {
+                    //  if dne, def
+                    (self.expr_to_dot_string(function, global), None)
+                }
+            } else {
+                (self.expr_to_dot_string(function, global), None)
+            }
+        } else {
+            (self.expr_to_dot_string(function, global), None)
+        };
+
+        let final_args_sets: Vec<&HashSet<Variable>> = if let Some(ref receiver) = receiver_args {
+            std::iter::once(receiver).chain(args_sets.iter()).collect()
+        } else {
+            args_sets.iter().collect()
+        };
+
+        // Model resolution and inference (unified logic for both tensor methods and normal functions)
+        let args_products = final_args_sets
+            .iter()
+            .map(|s| s.iter())
+            .multi_cartesian_product();
         let kw_names = kwargs_sets.iter().map(|(n, _)| *n);
         let kwargs_products: Vec<HashMap<Identifier, _>> = kwargs_sets
             .iter()

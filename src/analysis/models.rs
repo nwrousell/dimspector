@@ -111,6 +111,7 @@ pub struct TorchModels {
     pub broadcast: BroadcastModel,
     pub concat: ConcatModel,
     pub reshape: ReshapeModel,
+    pub tensor_reshape: TensorReshapeModel,
     pub tranpose: TransposeModel,
     pub tensor_from_size: TensorFromSizeModel,
     pub randint: RandIntModel,
@@ -125,6 +126,7 @@ impl Default for TorchModels {
             broadcast: BroadcastModel,
             concat: ConcatModel,
             reshape: ReshapeModel,
+            tensor_reshape: TensorReshapeModel,
             tranpose: TransposeModel,
             tensor_from_size: TensorFromSizeModel,
             randint: RandIntModel,
@@ -217,6 +219,56 @@ impl ModelContext {
             "torch.zeros" | "torch.ones" | "torch.empty" | "torch.rand" | "torch.randn"
             | "torch.full" => Some(&self.torch.tensor_from_size),
             "torch.randint" => Some(&self.torch.randint),
+
+            // torch.Tensor methods route to existing models where signatures are compatible
+            "torch.Tensor.abs"
+            | "torch.Tensor.acos"
+            | "torch.Tensor.acosh"
+            | "torch.Tensor.asin"
+            | "torch.Tensor.asinh"
+            | "torch.Tensor.atan"
+            | "torch.Tensor.atanh"
+            | "torch.Tensor.ceil"
+            | "torch.Tensor.cos"
+            | "torch.Tensor.cosh"
+            | "torch.Tensor.erf"
+            | "torch.Tensor.erfc"
+            | "torch.Tensor.exp"
+            | "torch.Tensor.expm1"
+            | "torch.Tensor.floor"
+            | "torch.Tensor.frac"
+            | "torch.Tensor.isfinite"
+            | "torch.Tensor.isinf"
+            | "torch.Tensor.isnan"
+            | "torch.Tensor.log"
+            | "torch.Tensor.log10"
+            | "torch.Tensor.log1p"
+            | "torch.Tensor.log2"
+            | "torch.Tensor.neg"
+            | "torch.Tensor.reciprocal"
+            | "torch.Tensor.round"
+            | "torch.Tensor.rsqrt"
+            | "torch.Tensor.sigmoid"
+            | "torch.Tensor.sign"
+            | "torch.Tensor.sin"
+            | "torch.Tensor.sinh"
+            | "torch.Tensor.sqrt"
+            | "torch.Tensor.square"
+            | "torch.Tensor.tan"
+            | "torch.Tensor.tanh"
+            | "torch.Tensor.trunc" => Some(&self.torch.passthrough),
+            "torch.Tensor.sum"
+            | "torch.Tensor.mean"
+            | "torch.Tensor.prod"
+            | "torch.Tensor.amax"
+            | "torch.Tensor.amin"
+            | "torch.Tensor.std"
+            | "torch.Tensor.var"
+            | "torch.Tensor.logsumexp"
+            | "torch.Tensor.all"
+            | "torch.Tensor.any" => Some(&self.torch.rdx),
+            "torch.Tensor.transpose" => Some(&self.torch.tranpose),
+            "torch.Tensor.reshape" | "torch.Tensor.view" => Some(&self.torch.tensor_reshape),
             _ => None,
         }
     }
@@ -366,7 +418,12 @@ impl Model for BroadcastModel {
         let right_shape = Shape(r_shape.clone());
 
         let mut out_shape = Vec::new();
-        for (dim_position, pair) in l_shape.iter().rev().zip_longest(r_shape.iter().rev()).enumerate() {
+        for (dim_position, pair) in l_shape
+            .iter()
+            .rev()
+            .zip_longest(r_shape.iter().rev())
+            .enumerate()
+        {
             let next_dim = match pair {
                 Both(l_dim, r_dim) => {
                     if l_dim.is_one() {
@@ -581,6 +638,10 @@ impl Model for RdxModel {
         let rdx_dims = args.get(&intern("dim")).unwrap(); // bad?
 
         let result_dims = match rdx_dims {
+            Variable::None => {
+                // No dim specified - reduce across all dimensions to singleton
+                vec![DimVar::from(1)]
+            }
             Variable::DimVar(DimVar {
                 kind: DimKind::Concrete(dim),
             }) => match dim {
@@ -765,6 +826,47 @@ impl Model for ReshapeModel {
         }
 
         Ok(Shape(tgt_shape))
+    }
+}
+
+#[derive(Debug)]
+pub struct TensorReshapeModel;
+
+static TENSOR_RESHAPE_SIGNATURE: LazyLock<Signature> = LazyLock::new(|| Signature::Variadic {
+    kwargs_defaults: Vec::new(),
+});
+
+impl Model for TensorReshapeModel {
+    fn infer(
+        &self,
+        args: Vec<&Variable>,
+        kwargs: HashMap<Identifier, &Variable>,
+        span: SourceSpan,
+        arg_spans: &ArgSpans,
+    ) -> Result<Shape> {
+        let resolved_args = resolve_args(args, kwargs, &TENSOR_RESHAPE_SIGNATURE);
+        let variadic_tuple = resolved_args
+            .get(&intern("variadic"))
+            .expect("variadic signature always has variadic tuple")
+            .as_tuple()
+            .expect("variadic should be tuple");
+
+        let input = variadic_tuple.first().ok_or_else(|| {
+            anyhow!("TensorReshapeModel requires at least one argument (the tensor)")
+        })?;
+
+        let shape_tuple = if variadic_tuple.len() == 2 {
+            if let Some(Variable::Collection(Collection::Tuple(_))) = variadic_tuple.get(1) {
+                variadic_tuple[1].clone()
+            } else {
+                Variable::Collection(Collection::Tuple(variadic_tuple[1..].to_vec()))
+            }
+        } else {
+            Variable::Collection(Collection::Tuple(variadic_tuple[1..].to_vec()))
+        };
+
+        let reshape_model = ReshapeModel;
+        reshape_model.infer(vec![input, &shape_tuple], HashMap::new(), span, arg_spans)
     }
 }
 
