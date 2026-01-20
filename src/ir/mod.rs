@@ -5,7 +5,7 @@ pub mod types;
 use std::collections::HashSet;
 
 pub use crate::ir::types::intern;
-use crate::parse::{self, ParsedFile, ParsedProject};
+use crate::parse::{ParsedFile, ParsedProject, SymbolTable};
 use anyhow::Result;
 use lower::{lower_class, lower_func};
 use string_interner::symbol::SymbolU32;
@@ -19,6 +19,7 @@ impl File {
     pub fn from_parsed(
         parsed: &ParsedFile,
         all_class_names: &std::collections::HashSet<Identifier>,
+        symbol_table: &SymbolTable,
     ) -> Result<Self> {
         let mut functions = Vec::new();
         for func in &parsed.functions {
@@ -28,8 +29,13 @@ impl File {
 
         let mut classes = Vec::new();
         for class_def in &parsed.classes {
-            let lowered_class =
-                lower_class(class_def, all_class_names, &parsed.path, &parsed.source)?;
+            let lowered_class = lower_class(
+                class_def,
+                all_class_names,
+                &parsed.path,
+                &parsed.source,
+                symbol_table,
+            )?;
             classes.push(lowered_class);
         }
 
@@ -43,7 +49,10 @@ impl File {
 
 impl Project {
     /// Lower a parsed project to IR
-    pub fn from_parsed_project(parsed_project: &ParsedProject) -> Result<Self> {
+    pub fn from_parsed_project(
+        parsed_project: &ParsedProject,
+        symbol_table: &SymbolTable,
+    ) -> Result<Self> {
         let mut files = Vec::new();
 
         // collect class names
@@ -54,7 +63,7 @@ impl Project {
             .collect();
 
         for parsed_file in &parsed_project.files {
-            let file = File::from_parsed(parsed_file, &class_names)?;
+            let file = File::from_parsed(parsed_file, &class_names, symbol_table)?;
             files.push(file);
         }
 
@@ -62,7 +71,11 @@ impl Project {
     }
 
     /// Update a single file in the project by re-lowering it from a parsed file
-    pub fn update_file(&mut self, parsed_file: &ParsedFile) -> Result<()> {
+    pub fn update_file(
+        &mut self,
+        parsed_file: &ParsedFile,
+        symbol_table: &SymbolTable,
+    ) -> Result<()> {
         let mut class_names: HashSet<SymbolU32> = self
             .files
             .iter()
@@ -74,7 +87,7 @@ impl Project {
         }
 
         let file_path = &parsed_file.path;
-        let updated_file = File::from_parsed(parsed_file, &class_names)?;
+        let updated_file = File::from_parsed(parsed_file, &class_names, symbol_table)?;
 
         // issue here is we don't have all the clas names. we could look through each of the
 

@@ -1,8 +1,8 @@
 use itertools::Either;
 
 use crate::analysis::dimvars::{DimKind, DimVar, parse_dimvar};
-use crate::ir::Expr;
 use crate::ir::types::Identifier;
+use crate::ir::{Class, Expr};
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -105,7 +105,7 @@ pub enum DictKey {
 /// Represents a class instance with concrete dimension variable substitutions.
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct ClassInstance {
-    /// The identifier of the class
+    /// The canonical identifier of the class (e.g., "module.ClassName")
     pub class_id: Identifier,
     /// Mapping from parameter dimvars to concrete dimvars
     pub substitutions: BTreeMap<DimVar, DimVar>,
@@ -120,6 +120,13 @@ impl Variable {
             Variable::Collection(_) => None,
             Variable::None => None,
             Variable::ClassInstance(_) => None,
+        }
+    }
+
+    pub fn as_class_instance(&self) -> Option<&ClassInstance> {
+        match self {
+            Variable::ClassInstance(instance) => Some(instance),
+            _ => None,
         }
     }
 

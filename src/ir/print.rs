@@ -56,7 +56,11 @@ impl fmt::Display for Function {
 
 impl fmt::Display for Class {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "class {}:\n", resolve(self.identifier))?;
+        if self.is_nn_module {
+            write!(f, "class {}(nn.Module):\n", resolve(self.identifier))?;
+        } else {
+            write!(f, "class {}:\n", resolve(self.identifier))?;
+        }
 
         // Print methods
         if !self.methods.is_empty() {

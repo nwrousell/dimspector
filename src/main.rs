@@ -49,7 +49,6 @@ fn check(path: PathBuf) -> anyhow::Result<()> {
 
     // Determine project root
     let (dimspector, errors) = if abs_path.is_file() {
-        println!("single file!");
         Dimspector::from_single_file(&abs_path)?
     } else if abs_path.is_dir() {
         Dimspector::from_project_root(&abs_path)?

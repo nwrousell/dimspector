@@ -379,8 +379,7 @@ impl FunctionAnalysis {
             Type::Constructor(class_id) => {
                 self.eval_constructor(*class_id, &args_sets, &kwargs_sets, global)
             }
-            Type::Method(class_id) => self.eval_method(
-                *class_id,
+            Type::Method => self.eval_method(
                 function,
                 domain,
                 &args_sets,
@@ -389,7 +388,45 @@ impl FunctionAnalysis {
                 &arg_spans,
                 global,
             ),
-            _ => self.eval_function(function, &args_sets, &kwargs_sets, span, &arg_spans, global),
+            _ => {
+                // check if this is an instance call (e.g., `model(x)` where model is a ClassInstance)
+                if let ExprKind::Ident(ident) = &function.kind
+                    && let Some(vars) = domain.get(ident)
+                {
+                    for var in vars {
+                        if let Some(instance) = var.as_class_instance()
+                            && let Some(class_analysis) = global.classes.get(&instance.class_id)
+                        {
+                            let method_name = if class_analysis.is_nn_module {
+                                intern("forward")
+                            } else {
+                                intern("__call__")
+                            };
+
+                            // Create a synthetic attribute expression for the method call
+                            let method_expr = Expr::attribute(
+                                function.clone(),
+                                method_name,
+                                ruff_text_size::TextRange::default(),
+                                Type::Method,
+                            );
+
+                            return self.eval_method(
+                                &method_expr,
+                                domain,
+                                &args_sets,
+                                &kwargs_sets,
+                                span,
+                                &arg_spans,
+                                global,
+                            );
+                        }
+                    }
+                }
+
+                // fallback to regular function call
+                self.eval_function(function, &args_sets, &kwargs_sets, span, &arg_spans, global)
+            }
         }
     }
 
@@ -448,7 +485,6 @@ impl FunctionAnalysis {
 
     fn eval_method(
         &mut self,
-        class_id: Identifier,
         function: &Expr,
         domain: &AnalysisDomain,
         args_sets: &[HashSet<Variable>],
@@ -483,44 +519,51 @@ impl FunctionAnalysis {
             .map(|vars| method_kw_names.clone().zip(vars).collect())
             .collect();
 
-        // Get the class analysis
-        if let Some(class_analysis) = global.classes.get(&class_id) {
-            // For each receiver ClassInstance and each combination of args/kwargs
-            for receiver_var in &receiver_vars {
-                if let Variable::ClassInstance(instance) = receiver_var {
-                    // Get the substituted signature for this method
-                    let signature_model =
-                        class_analysis.get_method_signature(method_name, instance)?;
-
-                    // For each combination of args/kwargs, use the signature model
-                    for (args_refs, kwargs_ref) in method_args_products
-                        .iter()
-                        .cartesian_product(method_kwargs_products.iter())
-                    {
-                        // Convert references to &Variable for the model
-                        let args: Vec<&Variable> = args_refs.iter().map(|v| *v).collect();
-                        let kwargs: HashMap<Identifier, &Variable> =
-                            kwargs_ref.iter().map(|(k, v)| (*k, *v)).collect();
-
-                        let any_top = args.iter().any(|v| matches!(**v, Variable::Top))
-                            || kwargs.iter().any(|(_, v)| matches!(**v, Variable::Top));
-                        if any_top {
-                            out_vars.insert(Variable::Top);
-                        } else {
-                            // Use the signature model to infer the result
-                            let result_shape =
-                                signature_model.infer(args, kwargs, span, arg_spans)?;
-                            out_vars.insert(Variable::Tensor(result_shape));
-                        }
-                    }
-                } else {
-                    // Receiver is not a ClassInstance
+        // For each receiver ClassInstance and each combination of args/kwargs
+        for receiver_var in &receiver_vars {
+            if let Variable::ClassInstance(instance) = receiver_var {
+                // Get the class analysis from the instance's class_id
+                let Some(class_analysis) = global.classes.get(&instance.class_id) else {
+                    log::debug!(
+                        "couldn't find class analysis for {}, not in {:?}",
+                        resolve(instance.class_id),
+                        global
+                            .classes
+                            .keys()
+                            .map(|k| resolve(*k))
+                            .collect::<Vec<_>>()
+                    );
                     out_vars.insert(Variable::Top);
+                    continue;
+                };
+
+                // Get the substituted signature for this method
+                let signature_model = class_analysis.get_method_signature(method_name, instance)?;
+
+                // For each combination of args/kwargs, use the signature model
+                for (args_refs, kwargs_ref) in method_args_products
+                    .iter()
+                    .cartesian_product(method_kwargs_products.iter())
+                {
+                    // Convert references to &Variable for the model
+                    let args: Vec<&Variable> = args_refs.iter().map(|v| *v).collect();
+                    let kwargs: HashMap<Identifier, &Variable> =
+                        kwargs_ref.iter().map(|(k, v)| (*k, *v)).collect();
+
+                    let any_top = args.iter().any(|v| matches!(**v, Variable::Top))
+                        || kwargs.iter().any(|(_, v)| matches!(**v, Variable::Top));
+                    if any_top {
+                        out_vars.insert(Variable::Top);
+                    } else {
+                        // Use the signature model to infer the result
+                        let result_shape = signature_model.infer(args, kwargs, span, arg_spans)?;
+                        out_vars.insert(Variable::Tensor(result_shape));
+                    }
                 }
+            } else {
+                // Receiver is not a ClassInstance
+                out_vars.insert(Variable::Top);
             }
-        } else {
-            // Class not found in analysis
-            out_vars.insert(Variable::Top);
         }
 
         Ok(out_vars)

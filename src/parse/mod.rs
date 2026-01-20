@@ -24,6 +24,7 @@ pub enum Import {
     },
 }
 
+#[derive(Debug)]
 pub struct ParsedFile {
     pub path: PathBuf,
     pub source: String,
@@ -96,6 +97,7 @@ impl ParsedFile {
     }
 }
 
+#[derive(Debug)]
 pub struct ParsedProject {
     pub project_root: PathBuf,
     pub files: Vec<ParsedFile>,

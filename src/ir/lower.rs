@@ -8,29 +8,31 @@ use petgraph::{
 };
 
 use ruff_python_ast::{
-    Expr as ASTExpr, ExprAttribute, ExprBinOp, ExprCall, ExprCompare, ExprDict,
-    ExprEllipsisLiteral, ExprFString, ExprList, ExprName, ExprNumberLiteral, ExprSlice,
-    ExprStringLiteral, ExprSubscript, ExprTuple, ExprUnaryOp, Keyword, Number, Stmt as ASTStmt,
-    StmtAssign, StmtAugAssign, StmtClassDef, StmtExpr, StmtFor, StmtFunctionDef, StmtGlobal,
-    StmtIf, StmtReturn, StmtWhile, StmtWith, UnaryOp,
+    Expr as ASTExpr, ExprAttribute, ExprBinOp, ExprCall, ExprCompare, ExprDict, ExprFString,
+    ExprList, ExprName, ExprNumberLiteral, ExprSlice, ExprStringLiteral, ExprSubscript, ExprTuple,
+    ExprUnaryOp, Keyword, Number, Stmt as ASTStmt, StmtAssign, StmtAugAssign, StmtClassDef,
+    StmtExpr, StmtFor, StmtFunctionDef, StmtGlobal, StmtIf, StmtReturn, StmtWhile, StmtWith,
+    UnaryOp,
 };
 use ruff_text_size::TextRange;
 use std::path::PathBuf;
 
 use crate::{
-    analysis::{DimKind, DimVar},
+    analysis::{DimKind, DimVar, parse_dimvar},
     ir::types::{Binop, Class, Constant, ExprKind, Function, Identifier, Slice, Type, intern},
 };
 use crate::{
     analysis::{Shape, Variable},
     ir::types::{BasicBlock, BasicBlockIdx, Cfg, Expr, PartialCfg, Statement, Terminator},
 };
+use crate::{ir::resolve, parse::SymbolTable};
 
 pub fn lower_class(
     class_def: &StmtClassDef,
     class_names: &std::collections::HashSet<Identifier>,
     file_path: &PathBuf,
     source: &str,
+    symbol_table: &SymbolTable,
 ) -> Result<Class> {
     let mut methods = HashMap::new();
 
@@ -42,11 +44,40 @@ pub fn lower_class(
         }
     }
 
+    // Check if any base class resolves to torch.nn.Module
+    let is_nn_module = class_def
+        .arguments
+        .as_ref()
+        .map(|args| {
+            args.args.iter().any(|base| {
+                let base_name = ast_expr_to_dot_string(base);
+                // First try to resolve through symbol table
+                let canonical = symbol_table
+                    .resolve(file_path, &base_name)
+                    .cloned()
+                    .unwrap_or(base_name);
+                canonical == "torch.nn.Module"
+            })
+        })
+        .unwrap_or(false);
+
     Ok(Class {
         identifier: intern(class_def.name.as_str()),
         file_path: file_path.clone(),
         methods,
+        is_nn_module,
     })
+}
+
+/// Convert an AST expression to a dot-separated string (e.g., "torch.nn.Module")
+fn ast_expr_to_dot_string(expr: &ASTExpr) -> String {
+    match expr {
+        ASTExpr::Name(ExprName { id, .. }) => id.as_str().to_string(),
+        ASTExpr::Attribute(ExprAttribute { value, attr, .. }) => {
+            format!("{}.{}", ast_expr_to_dot_string(value), attr.as_str())
+        }
+        _ => String::new(),
+    }
 }
 
 /// lowers function AST into function IR
@@ -148,8 +179,10 @@ impl LowerBody {
                         if name.id.as_str() == "int" {
                             if let ASTExpr::StringLiteral(dvar_str) = subscript.slice.as_ref() {
                                 let dvar = dvar_str.value.to_str();
-                                ty =
-                                    Variable::DimVar(DimVar::new(DimKind::Named(dvar.to_string())));
+                                // Use parse_dimvar to correctly handle both numeric (Concrete) and named dimensions
+                                ty = Variable::DimVar(parse_dimvar(dvar).unwrap_or_else(|_| {
+                                    DimVar::new(DimKind::Named(dvar.to_string()))
+                                }));
                             }
                         }
                     }
@@ -250,12 +283,12 @@ impl LowerBody {
                     Type::Function
                 }
             }
-            ASTExpr::Attribute(ExprAttribute { value, attr, .. }) => {
+            ASTExpr::Attribute(ExprAttribute { value, .. }) => {
                 // Check if the value is an instance identifier (assigned from constructor)
                 if let ASTExpr::Name(ExprName { id, .. }) = value.as_ref() {
                     let receiver_id = intern(id.as_str());
-                    if let Some(class_id) = self.instance_identifiers.get(&receiver_id) {
-                        return Type::Method(*class_id);
+                    if self.instance_identifiers.contains_key(&receiver_id) {
+                        return Type::Method;
                     }
                 }
                 // Otherwise, it's a function call on some other object

@@ -26,11 +26,15 @@ impl Dimspector {
         // Parse entire project
         let parsed_project = parse::ParsedProject::from_project_root(project_root)?;
 
+        log::debug!("AST:\n{:#?}", parsed_project);
+
         // Build symbol table
         let symbol_table = parse::SymbolTable::build(&parsed_project);
 
         // Lower to IR
-        let project_ir = ir::Project::from_parsed_project(&parsed_project)?;
+        let project_ir = ir::Project::from_parsed_project(&parsed_project, &symbol_table)?;
+
+        log::debug!("IR:\n{}", project_ir);
 
         // Collect all functions for signature models
         let all_functions: Vec<ir::Function> = project_ir
@@ -63,6 +67,8 @@ impl Dimspector {
         // Parse
         let parsed_file = parse::ParsedFile::from_path(&file.to_path_buf())?;
 
+        log::debug!("AST:\n{:#?}", parsed_file);
+
         let parsed_project = ParsedProject {
             files: vec![parsed_file],
             project_root: file.parent().unwrap().to_path_buf(),
@@ -72,7 +78,9 @@ impl Dimspector {
         let symbol_table = parse::SymbolTable::build(&parsed_project);
 
         // Lower to IR
-        let project_ir = ir::Project::from_parsed_project(&parsed_project)?;
+        let project_ir = ir::Project::from_parsed_project(&parsed_project, &symbol_table)?;
+
+        log::debug!("IR:\n{}", project_ir);
 
         // Create GlobalAnalysis
         let all_functions = &project_ir.files.first().unwrap().functions;
@@ -112,7 +120,8 @@ impl Dimspector {
             .iter()
             .find(|f| f.path == file_path)
             .unwrap();
-        self.project_ir.update_file(parsed_file_ref)?;
+        self.project_ir
+            .update_file(parsed_file_ref, &self.symbol_table)?;
 
         // Re-create GlobalAnalysis with updated functions (for signature models)
         let all_functions: Vec<ir::Function> = self

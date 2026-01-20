@@ -118,8 +118,6 @@ impl GlobalAnalysis {
     pub fn format_all(&self, project: &Project) -> String {
         let mut output = String::new();
 
-        println!("format_all");
-
         // Collect all classes and functions from all files
         let all_classes: Vec<&Class> = project.files.iter().flat_map(|f| &f.classes).collect();
         let all_functions: Vec<&Function> =

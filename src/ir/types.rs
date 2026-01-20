@@ -52,6 +52,8 @@ pub struct Class {
     pub identifier: Identifier,
     pub file_path: std::path::PathBuf,
     pub methods: HashMap<Identifier, Function>,
+    /// Whether this class inherits from torch.nn.Module
+    pub is_nn_module: bool,
 }
 
 pub type Cfg = DiGraph<BasicBlock, ()>;
@@ -533,8 +535,8 @@ impl From<Operator> for Binop {
 pub enum Type {
     /// Class constructor - the identifier is the class name
     Constructor(Identifier),
-    /// Bound method - the identifier is the class that owns the method
-    Method(Identifier),
+    /// Bound method - the class is derived from the receiver at analysis time
+    Method,
     /// Regular function (not a method or constructor)
     Function,
     /// Other types or unknown

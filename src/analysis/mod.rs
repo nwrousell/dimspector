@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 
 pub use types::{Shape, Variable};
 
-pub use crate::analysis::dimvars::{DimKind, DimVar};
+pub use crate::analysis::dimvars::{DimKind, DimVar, parse_dimvar};
 use crate::ir::{Class, Function, Identifier, Project};
 use crate::parse::SymbolTable;
 use anyhow::Result;

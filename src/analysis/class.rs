@@ -11,6 +11,8 @@ use super::{AnalysisDomain, FunctionAnalysis, GlobalAnalysis};
 
 #[derive(Debug)]
 pub struct ClassAnalysis {
+    /// Canonical id (includes module path). This should be used for lookups, etc.
+    pub canonical_id: Identifier,
     /// The identifier of the class being analyzed
     pub id: Identifier,
     /// The file path where this class is defined
@@ -21,6 +23,8 @@ pub struct ClassAnalysis {
     /// Analysis results for each method (including __init__).
     /// These are used for consistency checking.
     pub methods: HashMap<Identifier, FunctionAnalysis>,
+    /// Whether this class inherits from torch.nn.Module
+    pub is_nn_module: bool,
 }
 
 /// Analyze a class to infer tensor shapes for its attributes and methods.
@@ -30,6 +34,20 @@ pub struct ClassAnalysis {
 /// 2. Analyzes other methods for consistency checking
 pub fn analyze_class(class: &Class, global: &GlobalAnalysis) -> Result<ClassAnalysis> {
     let init_method_name = intern("__init__");
+
+    // Compute canonical id from symbol table (e.g., "module.ClassName")
+    let local_name = resolve(class.identifier);
+    let canonical_name = global
+        .symbol_table
+        .resolve(&class.file_path, &local_name)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Class {} not found in symbol table for file {}",
+                local_name,
+                class.file_path.display()
+            )
+        })?;
+    let canonical_id = intern(canonical_name);
 
     // Find the __init__ method
     let init_method = class.methods.get(&init_method_name).ok_or_else(|| {
@@ -92,10 +110,12 @@ pub fn analyze_class(class: &Class, global: &GlobalAnalysis) -> Result<ClassAnal
     }
 
     Ok(ClassAnalysis {
+        canonical_id,
         id: class.identifier,
         file_path: class.file_path.clone(),
         attributes,
         methods,
+        is_nn_module: class.is_nn_module,
     })
 }
 
@@ -183,7 +203,7 @@ impl ClassAnalysis {
         }
 
         Ok(Variable::ClassInstance(ClassInstance {
-            class_id: self.id,
+            class_id: self.canonical_id,
             substitutions,
         }))
     }
