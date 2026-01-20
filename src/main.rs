@@ -23,11 +23,6 @@ enum Command {
 fn main() -> Result<()> {
     env_logger::init();
 
-    // Configure miette to show more surrounding source code
-    miette::set_hook(Box::new(|_| {
-        Box::new(MietteHandlerOpts::new().context_lines(5).build())
-    }))?;
-
     let args = Args::parse();
 
     match args.command {
@@ -53,21 +48,19 @@ fn check(path: PathBuf) -> anyhow::Result<()> {
     let abs_path = std::fs::canonicalize(&path)?;
 
     // Determine project root
-    let project_root = if abs_path.is_file() {
-        abs_path.parent().unwrap_or(&abs_path)
+    let (dimspector, errors) = if abs_path.is_file() {
+        println!("single file!");
+        Dimspector::from_single_file(&abs_path)?
     } else if abs_path.is_dir() {
-        &abs_path
+        Dimspector::from_project_root(&abs_path)?
     } else {
         anyhow::bail!("path must be a Python file (.py) or a directory");
     };
 
-    // Use Dimspector API to analyze the project
-    let (dimspector, errors) = Dimspector::from_project_root(project_root)?;
-
     // Print errors if any
     if !errors.is_empty() {
         for (file_path, error) in &errors {
-            eprintln!("Error in {}: {:?}", file_path.display(), error);
+            eprintln!("Error in {}: {}", file_path.display(), error);
         }
         anyhow::bail!("shape analysis found {} errors", errors.len());
     }

@@ -2,19 +2,19 @@ mod lower;
 mod print;
 pub mod types;
 
+pub use crate::ir::types::intern;
 use crate::parse::{ParsedFile, ParsedProject};
 use anyhow::Result;
 use lower::{lower_class, lower_func};
 pub use types::{
     Annotation, BasicBlock, BasicBlockIdx, Cfg, Class, Expr, File, Function, Identifier, Parameter,
-    Project, Statement, Terminator, intern, resolve,
+    Project, Statement, Terminator, resolve,
 };
 
 impl File {
     /// Lower a parsed file to IR
     pub fn from_parsed(parsed: &ParsedFile) -> Result<Self> {
         // Gather all class names first
-        use crate::ir::types::intern;
         let class_names: std::collections::HashSet<_> = parsed
             .classes
             .iter()

@@ -4,7 +4,8 @@ use std::sync::Arc;
 use itertools::Itertools;
 
 use crate::analysis::models::ModelContext;
-use crate::ir::{Class, File, Function, Identifier, Project, intern, resolve};
+use crate::ir::types::intern;
+use crate::ir::{Class, File, Function, Identifier, Project, resolve};
 use crate::parse::SymbolTable;
 use anyhow::Result;
 

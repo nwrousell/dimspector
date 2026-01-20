@@ -2,10 +2,10 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::analysis::{self, ShapeError};
-use crate::ir;
 use crate::parse;
+use crate::{ParsedProject, ir};
 
-/// High-level API
+/// High-level API that supports incremental analysis
 pub struct Dimspector {
     pub parsed_project: parse::ParsedProject,
     symbol_table: parse::SymbolTable,
@@ -41,6 +41,42 @@ impl Dimspector {
 
         // Create GlobalAnalysis with all functions (for signature models)
         let mut global_analysis = analysis::GlobalAnalysis::new(&symbol_table, &all_functions);
+
+        // Analyze everything and collect errors
+        let mut errors = Vec::new();
+        global_analysis.analyze_project(&project_ir, &mut errors);
+
+        Ok((
+            Self {
+                parsed_project,
+                symbol_table,
+                project_ir,
+                global_analysis,
+            },
+            errors,
+        ))
+    }
+
+    pub fn from_single_file(file: &Path) -> anyhow::Result<(Self, Vec<(PathBuf, ShapeError)>)> {
+        log::info!("Building Dimspector from single file: {}", file.display());
+
+        // Parse
+        let parsed_file = parse::ParsedFile::from_path(&file.to_path_buf())?;
+
+        let parsed_project = ParsedProject {
+            files: vec![parsed_file],
+            project_root: file.parent().unwrap().to_path_buf(),
+        };
+
+        // Build symbol table
+        let symbol_table = parse::SymbolTable::build(&parsed_project);
+
+        // Lower to IR
+        let project_ir = ir::Project::from_parsed_project(&parsed_project)?;
+
+        // Create GlobalAnalysis
+        let all_functions = &project_ir.files.first().unwrap().functions;
+        let mut global_analysis = analysis::GlobalAnalysis::new(&symbol_table, all_functions);
 
         // Analyze everything and collect errors
         let mut errors = Vec::new();

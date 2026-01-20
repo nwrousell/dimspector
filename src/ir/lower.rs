@@ -11,8 +11,8 @@ use ruff_python_ast::{
     Expr as ASTExpr, ExprAttribute, ExprBinOp, ExprCall, ExprCompare, ExprDict,
     ExprEllipsisLiteral, ExprFString, ExprList, ExprName, ExprNumberLiteral, ExprSlice,
     ExprStringLiteral, ExprSubscript, ExprTuple, ExprUnaryOp, Keyword, Number, Stmt as ASTStmt,
-    StmtAssign, StmtAugAssign, StmtClassDef, StmtExpr, StmtFor, StmtFunctionDef, StmtIf, StmtGlobal,
-    StmtReturn, StmtWhile, StmtWith, UnaryOp,
+    StmtAssign, StmtAugAssign, StmtClassDef, StmtExpr, StmtFor, StmtFunctionDef, StmtGlobal,
+    StmtIf, StmtReturn, StmtWhile, StmtWith, UnaryOp,
 };
 use ruff_text_size::TextRange;
 use std::path::PathBuf;
@@ -49,9 +49,10 @@ pub fn lower_class(
     })
 }
 
+/// lowers function AST into function IR
 pub fn lower_func(
     func: &StmtFunctionDef,
-    class_names: &std::collections::HashSet<Identifier>,
+    class_names: &std::collections::HashSet<Identifier>, // Needs all class names to distinguish between constructors/functions
     file_path: &PathBuf,
     source: &str,
 ) -> Result<Function> {

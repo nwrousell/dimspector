@@ -84,8 +84,8 @@ impl SymbolTable {
                     module: _,
                     names: _,
                 } => {
-                    // from .X import Y (simplified - just skip for now)
-                    // TODO: Handle relative imports
+                    // from .X import Y
+                    todo!("handle relative imports")
                 }
             }
         }
