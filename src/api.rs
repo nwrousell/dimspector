@@ -123,6 +123,7 @@ impl Dimspector {
             .collect();
         self.global_analysis = analysis::GlobalAnalysis::new(&self.symbol_table, &all_functions);
 
+        // TODO: this is silly, we only need to re-analyze the classes in this file. If any changed though, we need to re-analyze other files
         // First, analyze all classes from all files so they're available for type resolution
         for file in &self.project_ir.files {
             for class in &file.classes {
