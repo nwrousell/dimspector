@@ -383,6 +383,22 @@ impl Expr {
             span: range_to_span(range),
         }
     }
+
+    pub fn list(elts: Vec<Expr>, range: TextRange, ty: Type) -> Expr {
+        Expr {
+            kind: ExprKind::List(elts),
+            ty,
+            span: range_to_span(range),
+        }
+    }
+
+    pub fn dict(items: Vec<(Expr, Expr)>, range: TextRange, ty: Type) -> Expr {
+        Expr {
+            kind: ExprKind::Dict(items),
+            ty,
+            span: range_to_span(range),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -544,6 +560,8 @@ pub enum ExprKind {
     },
     Constant(Constant),
     Tuple(Vec<Expr>),
+    List(Vec<Expr>),
+    Dict(Vec<(Expr, Expr)>),
     Index {
         receiver: Box<Expr>,
         index: Vec<Either<Expr, Slice>>,

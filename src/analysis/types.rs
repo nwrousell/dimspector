@@ -1,4 +1,7 @@
+use itertools::Either;
+
 use crate::analysis::dimvars::{DimKind, DimVar, parse_dimvar};
+use crate::ir::Expr;
 use crate::ir::types::Identifier;
 use std::collections::BTreeMap;
 
@@ -7,9 +10,96 @@ pub enum Variable {
     Top,
     DimVar(DimVar),
     Tensor(Shape),
-    Tuple(Vec<Variable>),
-    None,
     ClassInstance(ClassInstance),
+    Collection(Collection),
+    None,
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub enum Collection {
+    Tuple(Vec<Variable>),
+    List(Vec<Variable>),
+    Dict(BTreeMap<DictKey, Variable>),
+}
+
+impl Collection {
+    fn eval_vectored_index(
+        &self,
+        tuple_elts: &[Variable],
+        index_or_slice: &Either<Variable, DimSlice>,
+    ) -> Option<Variable> {
+        match index_or_slice {
+            Either::Left(var) => {
+                if let Some(c) = var.as_concrete_dimvar() {
+                    tuple_elts.get(c as usize).cloned()
+                } else {
+                    Some(Variable::Top)
+                }
+            }
+            Either::Right(DimSlice { lower, upper }) => {
+                let lower = if let Some(l) = lower {
+                    l.as_concrete_dimvar().map(|c| c as usize)
+                } else {
+                    Some(0)
+                };
+
+                let upper = if let Some(u) = upper {
+                    u.as_concrete_dimvar().map(|c| c as usize)
+                } else {
+                    Some(tuple_elts.len())
+                };
+
+                match (lower, upper) {
+                    (Some(l), Some(u)) => {
+                        let tuple =
+                            Variable::Collection(Collection::Tuple(tuple_elts[l..u].to_vec()));
+                        Some(tuple)
+                    }
+                    _ => Some(Variable::Top),
+                }
+            }
+        }
+    }
+
+    pub fn read_at_index(
+        &self,
+        index_or_slices: &[&Either<Variable, DimSlice>],
+    ) -> Option<Variable> {
+        assert!(index_or_slices.len() == 1);
+        let index_or_slice = index_or_slices.first().unwrap();
+        match self {
+            Collection::Tuple(elts) | Collection::List(elts) => {
+                self.eval_vectored_index(elts, index_or_slice)
+            }
+            Collection::Dict(items) => {
+                // TODO: string keys. right now this would require adding string to variable or
+                // routing exprs here directly instead, which could be ok with string constant
+                // folding at ir
+                let &Either::Left(index) = index_or_slice else {
+                    return None;
+                };
+                let Some(key) = index.as_concrete_dimvar().map(|k| DictKey::Int(k)) else {
+                    return None;
+                };
+
+                Some(items[&key].clone())
+            }
+        }
+    }
+
+    pub fn tup_from_elts(elts: Vec<Variable>) -> Variable {
+        Variable::Collection(Collection::Tuple(elts))
+    }
+
+    pub fn list_from_elts(elts: Vec<Variable>) -> Variable {
+        Variable::Collection(Collection::List(elts))
+    }
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DictKey {
+    Int(i64),
+    Str(String),
 }
 
 /// Represents a class instance with concrete dimension variable substitutions.
@@ -27,7 +117,7 @@ impl Variable {
             Variable::Top => None,
             Variable::DimVar(dim_var) => Some(dim_var),
             Variable::Tensor(_) => None,
-            Variable::Tuple(_) => None,
+            Variable::Collection(_) => None,
             Variable::None => None,
             Variable::ClassInstance(_) => None,
         }
@@ -35,7 +125,7 @@ impl Variable {
 
     pub fn as_tuple(&self) -> Option<&Vec<Variable>> {
         match self {
-            Variable::Tuple(vars) => Some(vars),
+            Variable::Collection(Collection::Tuple(vars)) => Some(vars),
             _ => None,
         }
     }
@@ -45,23 +135,26 @@ impl Variable {
             Variable::Top => None,
             Variable::DimVar(_) => None,
             Variable::Tensor(shape) => Some(shape.clone()),
-            Variable::Tuple(vars) => {
-                if vars.iter().all(|var| matches!(var, Variable::DimVar(_))) {
-                    let shape = Shape(
-                        vars.iter()
-                            .map(|var| {
-                                let Variable::DimVar(dvar) = var else {
-                                    unreachable!("all var in vars should be dimvar")
-                                };
-                                dvar.clone()
-                            })
-                            .collect(),
-                    );
-                    Some(shape)
-                } else {
-                    None
+            Variable::Collection(col) => match col {
+                Collection::Tuple(vars) | Collection::List(vars) => {
+                    if vars.iter().all(|var| matches!(var, Variable::DimVar(_))) {
+                        let shape = Shape(
+                            vars.iter()
+                                .map(|var| {
+                                    let Variable::DimVar(dvar) = var else {
+                                        unreachable!("all var in vars should be dimvar")
+                                    };
+                                    dvar.clone()
+                                })
+                                .collect(),
+                        );
+                        Some(shape)
+                    } else {
+                        None
+                    }
                 }
-            }
+                _ => None,
+            },
             Variable::None => None,
             Variable::ClassInstance(_) => None,
         }
@@ -72,22 +165,25 @@ impl Variable {
             Variable::Top => None,
             Variable::DimVar(_) => None,
             Variable::Tensor(shape) => Some(shape.0.clone()),
-            Variable::Tuple(vars) => {
-                if vars.iter().all(|var| matches!(var, Variable::DimVar(_))) {
-                    Some(
-                        vars.iter()
-                            .map(|var| {
-                                let Variable::DimVar(dvar) = var else {
-                                    unreachable!("all var in vars should be dimvar")
-                                };
-                                dvar.clone()
-                            })
-                            .collect(),
-                    )
-                } else {
-                    None
+            Variable::Collection(col) => match col {
+                Collection::Tuple(vars) | Collection::List(vars) => {
+                    if vars.iter().all(|var| matches!(var, Variable::DimVar(_))) {
+                        Some(
+                            vars.iter()
+                                .map(|var| {
+                                    let Variable::DimVar(dvar) = var else {
+                                        unreachable!("all var in vars should be dimvar")
+                                    };
+                                    dvar.clone()
+                                })
+                                .collect(),
+                        )
+                    } else {
+                        None
+                    }
                 }
-            }
+                _ => None,
+            },
             Variable::None => None,
             Variable::ClassInstance(_) => None,
         }

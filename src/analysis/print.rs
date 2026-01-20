@@ -6,6 +6,7 @@ use crate::{
     analysis::{
         AnalysisDomain, ClassAnalysis, FunctionAnalysis, GlobalAnalysis,
         dimvars::{CanonicalDimVar, DimVar, NamedPow, Term},
+        types::{Collection, DictKey},
     },
     ir::{
         Class, Function, resolve,
@@ -28,7 +29,7 @@ impl fmt::Display for Variable {
             Variable::Top => write!(f, "⟙"),
             Variable::DimVar(dim_var) => write!(f, "{}", dim_var),
             Variable::Tensor(shape) => write!(f, "{}", shape),
-            Variable::Tuple(vars) => write_comma_separated(f, vars),
+            Variable::Collection(collection) => write!(f, "{}", collection),
             Variable::None => write!(f, "None"),
             Variable::ClassInstance(instance) => {
                 use crate::ir::types::resolve;
@@ -47,6 +48,44 @@ impl fmt::Display for Variable {
                 }
                 Ok(())
             }
+        }
+    }
+}
+
+impl fmt::Display for Collection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Collection::Tuple(vars) => {
+                write!(f, "(")?;
+                write_comma_separated(f, vars)?;
+                write!(f, ")")
+            }
+            Collection::List(vars) => {
+                write!(f, "[")?;
+                write_comma_separated(f, vars)?;
+                write!(f, "]")
+            }
+            Collection::Dict(map) => {
+                write!(f, "{{")?;
+                let mut first = true;
+                for (key, value) in map {
+                    if !first {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}: {}", key, value)?;
+                    first = false;
+                }
+                write!(f, "}}")
+            }
+        }
+    }
+}
+
+impl fmt::Display for DictKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DictKey::Int(i) => write!(f, "{}", i),
+            DictKey::Str(s) => write!(f, "{}", s),
         }
     }
 }

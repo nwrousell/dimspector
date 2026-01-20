@@ -153,6 +153,23 @@ impl fmt::Display for Expr {
                 write_comma_separated(f, exprs)?;
                 write!(f, ")")
             }
+            ExprKind::List(exprs) => {
+                write!(f, "[")?;
+                write_comma_separated(f, exprs)?;
+                write!(f, "]")
+            }
+            ExprKind::Dict(pairs) => {
+                write!(f, "{{")?;
+                let mut first = true;
+                for (key, value) in pairs {
+                    if !first {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}: {}", key, value)?;
+                    first = false;
+                }
+                write!(f, "}}")
+            }
         }
     }
 }

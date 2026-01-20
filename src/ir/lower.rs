@@ -8,10 +8,10 @@ use petgraph::{
 };
 
 use ruff_python_ast::{
-    Expr as ASTExpr, ExprAttribute, ExprBinOp, ExprCall, ExprCompare, ExprEllipsisLiteral,
-    ExprFString, ExprList, ExprName, ExprNumberLiteral, ExprSlice, ExprStringLiteral,
-    ExprSubscript, ExprTuple, ExprUnaryOp, Keyword, Number, Stmt as ASTStmt, StmtAssign,
-    StmtAugAssign, StmtClassDef, StmtExpr, StmtFor, StmtFunctionDef, StmtGlobal, StmtIf,
+    Expr as ASTExpr, ExprAttribute, ExprBinOp, ExprCall, ExprCompare, ExprDict,
+    ExprEllipsisLiteral, ExprFString, ExprList, ExprName, ExprNumberLiteral, ExprSlice,
+    ExprStringLiteral, ExprSubscript, ExprTuple, ExprUnaryOp, Keyword, Number, Stmt as ASTStmt,
+    StmtAssign, StmtAugAssign, StmtClassDef, StmtExpr, StmtFor, StmtFunctionDef, StmtIf, StmtGlobal,
     StmtReturn, StmtWhile, StmtWith, UnaryOp,
 };
 use ruff_text_size::TextRange;
@@ -790,7 +790,19 @@ impl LowerBody {
                     .map(|e| self.lower_expr(e))
                     .collect::<Result<Vec<Expr>>>()?;
 
-                Ok(Expr::tuple(elts, range, ty))
+                Ok(Expr::list(elts, range, ty))
+            }
+
+            ASTExpr::Dict(ExprDict { items, range, .. }) => {
+                let mut pairs = Vec::new();
+                for item in items {
+                    if let Some(key_expr) = item.key {
+                        let key = self.lower_expr(key_expr)?;
+                        let value = self.lower_expr(item.value)?;
+                        pairs.push((key, value));
+                    }
+                }
+                Ok(Expr::dict(pairs, range, ty))
             }
 
             _ => todo!("unhandled expr: {expr:#?}"),
