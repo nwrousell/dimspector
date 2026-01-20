@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 
 use itertools::{Either, Itertools};
 use miette::SourceSpan;
@@ -15,11 +16,13 @@ use super::{AnalysisDomain, GlobalAnalysis, JoinSemiLattice};
 
 #[derive(Debug)]
 pub struct FunctionAnalysis {
-    // TODO: currently just using Hash{Set,Map}s, but would benefit perhaps
-    // from using bitsets, if the speedup is worth it
     pub id: Identifier,
+    pub file_path: PathBuf,
     pub state: HashMap<Location, AnalysisDomain>,
     pub function: Function,
+
+    /// Stores the assigned variable(s) for each assignment statement location
+    pub assignments: HashMap<Location, HashSet<Variable>>,
 }
 
 impl FunctionAnalysis {
@@ -49,7 +52,9 @@ impl FunctionAnalysis {
 
         Self {
             id: func.identifier.clone(),
+            file_path: func.file_path.clone(),
             state,
+            assignments: HashMap::new(),
             function: func.clone(),
         }
     }
@@ -798,6 +803,7 @@ impl FunctionAnalysis {
     /// Eval expr, updating target if this statement is an assignment.
     fn handle_stmt(
         &mut self,
+        loc: Location,
         domain: &mut AnalysisDomain,
         stmt: &Statement,
         global: &GlobalAnalysis,
@@ -805,6 +811,9 @@ impl FunctionAnalysis {
         let res_var = self.eval_expr(domain, &stmt.value, global)?;
 
         if let Some(target) = &stmt.target {
+            // Store the assignment result for inlay hints
+            self.assignments.insert(loc, res_var.clone());
+
             match &target.kind {
                 ExprKind::Ident(name) => {
                     domain.insert(name.clone(), res_var);
@@ -867,7 +876,7 @@ impl FunctionAnalysis {
                 }
             }
             let result = match func.instr(loc) {
-                Either::Left(stmt) => self.handle_stmt(&mut domain, stmt, global),
+                Either::Left(stmt) => self.handle_stmt(*loc, &mut domain, stmt, global),
                 Either::Right(term) => self.handle_term(&mut domain, term, global),
             };
             if let Err(e) = result {
@@ -880,5 +889,38 @@ impl FunctionAnalysis {
             self.state.insert(*loc, domain);
         }
         Ok(())
+    }
+
+    /// Generate inlay hints for this function's analyzed state
+    pub fn inlay_hints(&self) -> Vec<tower_lsp::lsp_types::InlayHint> {
+        use tower_lsp::lsp_types::InlayHint;
+
+        let mut hints = Vec::new();
+
+        // Generate inlay hint for each assignment
+        for loc in &self.function.locations {
+            if let Either::Left(stmt) = self.function.instr(loc) {
+                if stmt.target.is_some()
+                    && let Some(position) = stmt.assign_end
+                {
+                    if let Some(vars) = self.assignments.get(loc) {
+                        if let Some(label) = super::vars_to_inlay(vars) {
+                            hints.push(InlayHint {
+                                position,
+                                label: tower_lsp::lsp_types::InlayHintLabel::String(label),
+                                kind: None,
+                                text_edits: None,
+                                tooltip: None,
+                                padding_left: None,
+                                padding_right: None,
+                                data: None,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        hints
     }
 }

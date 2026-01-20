@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::PathBuf;
 
 use crate::analysis::dimvars::{DimKind, DimVar};
 use crate::analysis::models::SignatureModel;
@@ -12,6 +13,8 @@ use super::{AnalysisDomain, FunctionAnalysis, GlobalAnalysis};
 pub struct ClassAnalysis {
     /// The identifier of the class being analyzed
     pub id: Identifier,
+    /// The file path where this class is defined
+    pub file_path: PathBuf,
     /// Mapping from attribute names to their inferred Variables.
     /// The Variables' dimvars are in terms of the annotated dimvars of the __init__ method.
     pub attributes: HashMap<Identifier, HashSet<Variable>>,
@@ -90,12 +93,21 @@ pub fn analyze_class(class: &Class, global: &GlobalAnalysis) -> Result<ClassAnal
 
     Ok(ClassAnalysis {
         id: class.identifier,
+        file_path: class.file_path.clone(),
         attributes,
         methods,
     })
 }
 
 impl ClassAnalysis {
+    /// Generate inlay hints for all methods in this class
+    pub fn inlay_hints(&self) -> Vec<tower_lsp::lsp_types::InlayHint> {
+        self.methods
+            .values()
+            .flat_map(|method_analysis| method_analysis.inlay_hints())
+            .collect()
+    }
+
     /// Create a class instance with concrete dimension variable substitutions.
     /// Takes resolved arguments and keyword arguments and computes the DimVar substitutions from
     /// parameter annotations to concrete values.

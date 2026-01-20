@@ -161,52 +161,21 @@ impl Dimspector {
 
     /// Get inlay hints for given files
     pub fn inlay_hints(&self, files: &HashSet<PathBuf>) -> Vec<tower_lsp::lsp_types::InlayHint> {
-        use crate::ir::types::ExprKind;
-        use itertools::Either;
-        use tower_lsp::lsp_types::InlayHint;
+        let function_hints = self
+            .global_analysis
+            .functions
+            .values()
+            .filter(|func_analysis| files.contains(&func_analysis.file_path))
+            .flat_map(|func_analysis| func_analysis.inlay_hints());
 
-        let mut hints = Vec::new();
+        let class_hints = self
+            .global_analysis
+            .classes
+            .values()
+            .filter(|class_analysis| files.contains(&class_analysis.file_path))
+            .flat_map(|class_analysis| class_analysis.inlay_hints());
 
-        // Iterate through all analyzed functions and filter by requested files
-        for (_, func_analysis) in &self.global_analysis.functions {
-            let func = &func_analysis.function;
-
-            // Only process functions from requested files
-            if !files.contains(&func.file_path) {
-                continue;
-            }
-
-            // Generate hints for this function (similar to GlobalAnalysis::inlay_hints)
-            for loc in &func.locations {
-                if let Either::Left(stmt) = func.instr(&loc) {
-                    if let Some(target) = &stmt.target
-                        && let Some(position) = stmt.assign_end
-                    {
-                        // Only show hints for Ident targets
-                        if let ExprKind::Ident(name) = &target.kind {
-                            if let Some(vars) =
-                                func_analysis.state.get(loc).and_then(|d| d.get(name))
-                            {
-                                if let Some(label) = crate::analysis::vars_to_inlay(vars) {
-                                    hints.push(InlayHint {
-                                        position,
-                                        label: tower_lsp::lsp_types::InlayHintLabel::String(label),
-                                        kind: None,
-                                        text_edits: None,
-                                        tooltip: None,
-                                        padding_left: None,
-                                        padding_right: None,
-                                        data: None,
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        hints
+        function_hints.chain(class_hints).collect()
     }
 
     /// Format the entire analysis result as a string
