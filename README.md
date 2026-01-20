@@ -1,74 +1,37 @@
-# Dimspector
-An in-development tool to statically infer tensor shapes in PyTorch code. 
+<h1 align="center">dimspector</h1>
+A development tool that statically infers tensor shapes for PyTorch programs to provide shape hints and catch bugs. 
+
+  
+
+__This project is still in development. The subset of Python it can handle is patchy, but growing, and a VSCode extension and general LSP implementation will be available soon.__
+
+![VSCode Usage](assets/vscode_usage2.png)
+
+## How it works
+1. Add tensor shape annotations to parameters using [jaxtyping](https://github.com/patrick-kidger/jaxtyping/) (see above example). 
+2. Get inlay hints for inferred shapes and diagnostics for shape mismatches before running your code. 
+
+### Dimension Variable Symbolic Expressions
+```python
+def concat_features(x: Float[Tensor, "b n d"], y: Float[Tensor, "b n e"]) -> Float[Tensor, "b n d+e"]:
+    return torch.cat([x, y], dim=-1)
+```
+Supports symbolic (ex. `batch`), concrete (ex. `64`), addition (`d_model-1`), and multiplication (ex. `batch*d_model`) dimension variables. 
+
 
 ## Usage
 
-### Running
+### Run the analysis
+
 ```
-cargo run -- path/to/file.py
+# run standalone check on project or file
+cargo run -- check path/to/project/root
+
+# start LSP server
+cargo run -- server
 ```
 
-### Running tests
+### Run tests
 ```
 cargo insta test
 ```
-
-## Directory structure
-
-- `src/`
-    - `main.rs` - CLI
-    - `ast/` - mostly just wraps [rustpython parser](https://github.com/RustPython/Parser)
-    - `ir/` - types and lowering code for intermediate representation. 
-    - `analysis/`
-        - `mod.rs` - main analysis code
-        - `models.rs` - model definitions
-- `tests/programs/` - test files
-
-## Roadmap
-- [ ] more models
-    - [x] nn.functional (softmax, mean, sum)
-    - [x] passthrough
-    - [x] ones, ones_like and friends
-    - [x] change broadcast to model, use for torch.add, etc.
-    - [ ] unsqueeze / squeeze / expand_dims
-    - [x] reshape/transpose
-    - [ ] flatten/permute
-    - [ ] einsum, rearrange
-
-- [ ] DimVar folding / flow from .shape/.size
-    - [x] .shape - X.shape - special-cased in Path lookup
-    - [ ] .size() - special-cased in method lookup
-    - [x] binops between dimvars
-    - [x] tuples - Tuple(Vec<Variable>)
-    - [x] Dim Exprs
-- [ ] torch method calls
-- [ ] finish signature model
-    - [x] handle concrete args
-    - [ ] enforce existence of param with singleton named DimVar for each symbolic DimVar present in signature
-    - [ ] Generalize effect of function (optional/tuple/dimvar return type, maybe mutation?)
-- [ ] ellipsis
-
-- [ ] Usability improvements
-    - [x] miette for code context
-        - [ ] more provenance info 
-    - [ ] .pyi stubs
-    - [ ] LSP
-    - [ ] multiple files
-    - [ ] object orientation
-
-- [ ] method calls / side effects
-
-- [ ] Flesh out IR
-    - [x] Tuples
-    - [ ] `break`/`continue`
-    - [x] Lists?
-- [ ] Import resolution
-- [ ] if user has annotated var, check against our inference
-
-### Refactoring
-- [x] Make broadcast_resolve a Model
-- [ ] Set up interning and stop cloning everything everywhere
-- [ ] indexical over locations
-- [ ] modularize into smaller functions
-- [ ] switch to jaxtyping annotations 
-- [ ] doc comments on structs and functions

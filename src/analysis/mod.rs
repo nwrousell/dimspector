@@ -12,8 +12,8 @@ use miette::SourceSpan;
 pub use types::{Shape, Variable};
 
 pub use crate::analysis::dimvars::{DimKind, DimVar};
-use crate::analysis::models::{Model, ModelContext, SignatureModel};
 use crate::analysis::types::{ClassInstance, Collection, DimSlice};
+use crate::analysis::models::{ArgSpans, Model, ModelContext, SignatureModel};
 use crate::ir::types::{Binop, Constant, ExprKind, Location, Slice, Type};
 use crate::ir::{Class, File, Function, Project};
 use crate::ir::{Expr, Identifier, Parameter, Statement, Terminator, intern, resolve};
@@ -314,11 +314,13 @@ impl FunctionAnalysis {
             let out_var = match (l_var, r_var) {
                 (Variable::Top, _) | (_, Variable::Top) => Variable::Top,
                 (Variable::Tensor(_), Variable::Tensor(_)) => {
+                    let arg_spans = ArgSpans::new(vec![left.span, right.span], HashMap::new());
                     if is_matmul {
                         let out_shape = global.models.torch.matmul.infer(
                             vec![l_var, r_var],
                             HashMap::new(),
                             span,
+                            &arg_spans,
                         )?;
                         Variable::Tensor(out_shape)
                     } else {
@@ -326,6 +328,7 @@ impl FunctionAnalysis {
                             vec![l_var, r_var],
                             HashMap::new(),
                             span,
+                            &arg_spans,
                         )?;
                         Variable::Tensor(out_shape)
                     }
@@ -557,6 +560,12 @@ impl FunctionAnalysis {
         let args_sets = self.eval_call_args(domain, pos_args, global)?;
         let kwargs_sets = self.eval_call_kwargs(domain, keyword_args, global)?;
 
+        // Collect argument spans for better error messages
+        let arg_spans = ArgSpans::new(
+            pos_args.iter().map(|e| e.span).collect(),
+            keyword_args.iter().map(|(id, e)| (*id, e.span)).collect(),
+        );
+
         match &call_ty {
             Type::Constructor(class_id) => {
                 self.eval_constructor(*class_id, &args_sets, &kwargs_sets, global)
@@ -568,9 +577,10 @@ impl FunctionAnalysis {
                 &args_sets,
                 &kwargs_sets,
                 span,
+                &arg_spans,
                 global,
             ),
-            _ => self.eval_function(function, &args_sets, &kwargs_sets, span, global),
+            _ => self.eval_function(function, &args_sets, &kwargs_sets, span, &arg_spans, global),
         }
     }
 
@@ -635,6 +645,7 @@ impl FunctionAnalysis {
         args_sets: &[HashSet<Variable>],
         kwargs_sets: &[(Identifier, HashSet<Variable>)],
         span: SourceSpan,
+        arg_spans: &ArgSpans,
         global: &GlobalAnalysis,
     ) -> Result<HashSet<Variable>> {
         let mut out_vars = HashSet::new();
@@ -688,7 +699,8 @@ impl FunctionAnalysis {
                             out_vars.insert(Variable::Top);
                         } else {
                             // Use the signature model to infer the result
-                            let result_shape = signature_model.infer(args, kwargs, span)?;
+                            let result_shape =
+                                signature_model.infer(args, kwargs, span, arg_spans)?;
                             out_vars.insert(Variable::Tensor(result_shape));
                         }
                     }
@@ -711,6 +723,7 @@ impl FunctionAnalysis {
         args_sets: &[HashSet<Variable>],
         kwargs_sets: &[(Identifier, HashSet<Variable>)],
         span: SourceSpan,
+        arg_spans: &ArgSpans,
         global: &GlobalAnalysis,
     ) -> Result<HashSet<Variable>> {
         let mut out_vars = HashSet::new();
@@ -735,7 +748,9 @@ impl FunctionAnalysis {
                     if any_top {
                         out_vars.insert(Variable::Top);
                     } else {
-                        out_vars.insert(Variable::Tensor(model.infer(args, kwargs, span)?));
+                        out_vars.insert(Variable::Tensor(
+                            model.infer(args, kwargs, span, arg_spans)?,
+                        ));
                     }
                 }
             }
@@ -1346,7 +1361,11 @@ impl ClassAnalysis {
                 .collect()
         });
 
+        // Build method name as "ClassName.method_name"
+        let full_method_name = format!("{}.{}", resolve(self.id), resolve(method_name));
+
         Ok(SignatureModel {
+            name: full_method_name,
             params: substituted_params,
             returns: substituted_returns,
         })

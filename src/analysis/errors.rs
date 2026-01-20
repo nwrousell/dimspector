@@ -6,6 +6,7 @@ use crate::analysis::{DimVar, Shape};
 
 #[derive(Diagnostic, Error, Debug, Clone)]
 pub enum ShapeError {
+    /// Generic dimension mismatch (kept for backwards compatibility, prefer specific errors)
     #[error("Mismatched dims: {dim1} != {dim2}")]
     #[diagnostic(code(shape::mismatched_dims))]
     MismatchedDims {
@@ -13,28 +14,88 @@ pub enum ShapeError {
         dim2: DimVar,
         #[label("mismatch occurs here")]
         span: SourceSpan,
-        // span: SourceSpan,
+    },
+
+    /// Argument shape doesn't match parameter's expected shape
+    #[error("expected parameter `{param_name}` with shape {expected}, got {actual}")]
+    #[diagnostic(code(shape::signature_param_mismatch))]
+    SignatureParamMismatch {
+        func_name: String,
+        param_name: String,
+        expected: Shape,
+        actual: Shape,
+        #[label("argument has shape {actual}")]
+        span: SourceSpan,
+    },
+
+    /// Same dimension variable resolved to different values across arguments
+    #[error("in `{func_name}`: dimension `{dimvar_name}` used inconsistently")]
+    #[diagnostic(code(shape::inconsistent_dimvars))]
+    InconsistentDimVars {
+        func_name: String,
+        dimvar_name: String,
+        first_param_name: String,
+        second_param_name: String,
+        first_resolved: DimVar,
+        second_resolved: DimVar,
+        // None for single DimVar params, Some for Tensor params
+        first_shape: Option<Shape>,
+        second_shape: Option<Shape>,
+        #[label("`{first_param_name}` has {dimvar_name}={first_resolved}{}", first_shape.as_ref().map(|s| format!(" in {s}")).unwrap_or_default())]
+        first_span: SourceSpan,
+        #[label("`{second_param_name}` has {dimvar_name}={second_resolved}{}", second_shape.as_ref().map(|s| format!(" in {s}")).unwrap_or_default())]
+        second_span: SourceSpan,
+    },
+
+    /// Matmul inner dimensions don't match
+    #[error("matmul inner dimensions don't match: {left_shape} @ {right_shape}")]
+    #[diagnostic(code(shape::matmul_mismatch))]
+    MatmulMismatch {
+        left_shape: Shape,
+        right_shape: Shape,
+        left_dim: DimVar,
+        right_dim: DimVar,
+        #[label("left has inner dim {left_dim}, right has inner dim {right_dim}")]
+        span: SourceSpan,
+    },
+
+    /// Broadcasting failed because dimensions don't match and neither is 1
+    #[error(
+        "cannot broadcast {left_shape} with {right_shape}: at dimension -{dim_position}, {left_dim} != {right_dim} and neither is 1"
+    )]
+    #[diagnostic(code(shape::broadcast_mismatch))]
+    BroadcastMismatch {
+        left_shape: Shape,
+        right_shape: Shape,
+        dim_position: usize, // 1-indexed from the right for human readability
+        left_dim: DimVar,
+        right_dim: DimVar,
+        #[label("broadcast mismatch")]
+        span: SourceSpan,
     },
 
     #[error("Can't infer return shape")]
+    #[diagnostic(code(shape::uninferrable_call))]
     UninferrableCall {},
 
     #[error("Dimension {dim_ref} out of range for Tensor of rank {rank}")]
-    #[diagnostic(code(shape::mismatched_dims))]
+    #[diagnostic(code(shape::dim_out_of_range))]
     DimOutRange { dim_ref: i64, rank: usize },
 
-    #[error("Can't reshape {src} to {tgt}")]
-    #[diagnostic(code(shape::mismatched_dims))]
+    /// Reshape total elements don't match
+    #[error("cannot reshape {src} to {tgt}: total elements differ")]
+    #[diagnostic(code(shape::bad_reshape))]
     BadReshape {
         src: Shape,
         tgt: Shape,
-        // #[label("mismatch occurs here")]
-        // span: SourceSpan,
+        #[label("reshape mismatch")]
+        span: SourceSpan,
     },
 
     #[error(
         "Rank of tensor one ({tensor_1}), {rank_1}, does not equal rank of tensor two ({tensor_2}), {rank_2}"
     )]
+    #[diagnostic(code(shape::unequal_rank))]
     UnequalRank {
         tensor_1: Shape,
         tensor_2: Shape,
@@ -123,27 +184,91 @@ impl ShapeError {
 
     /// Convert this ShapeError to an LSP Diagnostic
     /// Requires file_content to convert byte offsets to line/character positions
-    pub fn to_diagnostic(&self, file_content: &str) -> Option<LspDiagnostic> {
+    pub fn to_diagnostic(&self, file_content: &str, file_uri: &str) -> Option<LspDiagnostic> {
+        use tower_lsp::lsp_types::{DiagnosticRelatedInformation, Location, Url};
+
         let message = self.to_string();
         let severity = DiagnosticSeverity::ERROR;
 
-        // Get range from span if available
-        let range = match self {
-            ShapeError::MismatchedDims { span, .. } => Self::span_to_range(span, file_content),
-            ShapeError::UnequalRank { span, .. } => Self::span_to_range(span, file_content),
+        // Get range and related_information from span if available
+        let (range, related_information) = match self {
+            ShapeError::MismatchedDims { span, .. } => {
+                (Self::span_to_range(span, file_content), None)
+            }
+            ShapeError::SignatureParamMismatch { span, .. } => {
+                (Self::span_to_range(span, file_content), None)
+            }
+            ShapeError::InconsistentDimVars {
+                first_span,
+                second_span,
+                dimvar_name,
+                first_param_name,
+                second_param_name,
+                first_resolved,
+                second_resolved,
+                first_shape,
+                second_shape,
+                ..
+            } => {
+                // Primary diagnostic at second occurrence
+                let range = Self::span_to_range(second_span, file_content);
+                let uri =
+                    Url::parse(file_uri).unwrap_or_else(|_| Url::parse("file:///unknown").unwrap());
+                // Related information showing both occurrences
+                let first_shape_info = first_shape
+                    .as_ref()
+                    .map(|s| format!(" in {}", s))
+                    .unwrap_or_default();
+                let second_shape_info = second_shape
+                    .as_ref()
+                    .map(|s| format!(" in {}", s))
+                    .unwrap_or_default();
+                let related = vec![
+                    DiagnosticRelatedInformation {
+                        location: Location {
+                            uri: uri.clone(),
+                            range: Self::span_to_range(first_span, file_content),
+                        },
+                        message: format!(
+                            "`{}` has {}={}{}",
+                            first_param_name, dimvar_name, first_resolved, first_shape_info
+                        ),
+                    },
+                    DiagnosticRelatedInformation {
+                        location: Location {
+                            uri,
+                            range: Self::span_to_range(second_span, file_content),
+                        },
+                        message: format!(
+                            "`{}` has {}={}{}",
+                            second_param_name, dimvar_name, second_resolved, second_shape_info
+                        ),
+                    },
+                ];
+                (range, Some(related))
+            }
+            ShapeError::MatmulMismatch { span, .. } => {
+                (Self::span_to_range(span, file_content), None)
+            }
+            ShapeError::BroadcastMismatch { span, .. } => {
+                (Self::span_to_range(span, file_content), None)
+            }
+            ShapeError::BadReshape { span, .. } => (Self::span_to_range(span, file_content), None),
+            ShapeError::UnequalRank { span, .. } => (Self::span_to_range(span, file_content), None),
             // For errors without spans, use a default range at the start of the file
-            ShapeError::UninferrableCall {}
-            | ShapeError::DimOutRange { .. }
-            | ShapeError::BadReshape { .. } => Range {
-                start: Position {
-                    line: 0,
-                    character: 0,
-                },
-                end: Position {
-                    line: 0,
-                    character: 0,
-                },
-            },
+            ShapeError::UninferrableCall {} | ShapeError::DimOutRange { .. } => {
+                let default_range = Range {
+                    start: Position {
+                        line: 0,
+                        character: 0,
+                    },
+                    end: Position {
+                        line: 0,
+                        character: 0,
+                    },
+                };
+                (default_range, None)
+            }
         };
 
         Some(LspDiagnostic {
@@ -153,7 +278,7 @@ impl ShapeError {
             code_description: None,
             source: Some("dimspector".to_string()),
             message,
-            related_information: None,
+            related_information,
             tags: None,
             data: None,
         })

@@ -87,7 +87,15 @@ impl Dimspector {
             .collect();
         self.global_analysis = analysis::GlobalAnalysis::new(&self.symbol_table, &all_functions);
 
-        // Analyze the file and collect errors
+        // First, analyze all classes from all files so they're available for type resolution
+        for file in &self.project_ir.files {
+            for class in &file.classes {
+                // Ignore errors from other files' classes - we just need them registered
+                let _ = self.global_analysis.analyze_class(class);
+            }
+        }
+
+        // Analyze the specific file and collect errors
         let mut errors = Vec::new();
         if let Some(file) = self.project_ir.files.iter().find(|f| f.path == file_path) {
             self.global_analysis.analyze_file(file, &mut errors);

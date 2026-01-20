@@ -20,7 +20,17 @@
 					"description": "Path to the dimspector binary"
 				}
 			}
-		}
+		},
+		"commands": [
+			{
+				"command": "dimspector.restartServer",
+				"title": "Dimspector: Restart Server"
+			},
+			{
+				"command": "dimspector.showOutput",
+				"title": "Show Dimspector Output"
+			}
+		]
 	},
 	"dependencies": {
 		"vscode-languageclient": "9.0.1"

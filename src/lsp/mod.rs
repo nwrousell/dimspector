@@ -122,7 +122,7 @@ impl LanguageServer for Backend {
             .await;
 
         let file_path_display = file_path.display().to_string();
-        
+
         // Get dimspector and call inlay_hints (drop lock before await)
         let hints = {
             let dimspector_guard = self.dimspector.read().unwrap();
@@ -139,7 +139,11 @@ impl LanguageServer for Backend {
                 self.client
                     .log_message(
                         MessageType::INFO,
-                        format!("Returning {} inlay hints for: {}", hints_vec.len(), file_path_display),
+                        format!(
+                            "Returning {} inlay hints for: {}",
+                            hints_vec.len(),
+                            file_path_display
+                        ),
                     )
                     .await;
                 Ok(Some(hints_vec.clone()))
@@ -169,12 +173,48 @@ impl LanguageServer for Backend {
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         let uri = params.text_document.uri.clone();
         let version = params.text_document.version;
+        let client = self.client.clone();
+
+        // Check if dimspector is initialized (drop guard before await)
+        let is_initialized = {
+            let dimspector_guard = self.dimspector.read().unwrap();
+            dimspector_guard.is_some()
+        };
+
+        if !is_initialized {
+            client
+                .log_message(
+                    MessageType::WARNING,
+                    format!(
+                        "Received did_change but Dimspector not initialized yet (file: {})",
+                        uri
+                    ),
+                )
+                .await;
+            return;
+        }
 
         // With TextDocumentSyncKind::FULL, content_changes[0].text is the full document
         if let Some(change) = params.content_changes.into_iter().next() {
             let content = change.text;
+            let file_path_display = uri.to_string();
+
+            client
+                .log_message(
+                    MessageType::INFO,
+                    format!("did_change: {} (version: {})", file_path_display, version),
+                )
+                .await;
+
             // Re-analyze file and publish diagnostics
             self.analyze_and_publish_diagnostics(uri, content, Some(version))
+                .await;
+        } else {
+            client
+                .log_message(
+                    MessageType::WARNING,
+                    format!("did_change received with no content changes: {}", uri),
+                )
                 .await;
         }
     }
@@ -207,7 +247,7 @@ impl Backend {
         };
 
         let file_path_display = file_path.display().to_string();
-        
+
         self.client
             .log_message(
                 MessageType::INFO,
@@ -217,6 +257,7 @@ impl Backend {
 
         let client = self.client.clone();
         let dimspector = self.dimspector.clone();
+        let uri_string = uri.as_str().to_string();
 
         // Run analysis in blocking task
         let (diagnostics, error_count) = tokio::task::spawn_blocking(move || {
@@ -225,8 +266,16 @@ impl Backend {
             // Check if dimspector is initialized
             let dimspector_instance = match dimspector_guard.as_mut() {
                 Some(d) => d,
-                None => return (Vec::new(), 0),
+                None => {
+                    log::warn!(
+                        "analyze_and_publish_diagnostics: Dimspector not initialized for {}",
+                        file_path.display()
+                    );
+                    return (Vec::new(), 0);
+                }
             };
+
+            log::info!("Starting analysis: {}", file_path.display());
 
             // Analyze the file
             match dimspector_instance.analyze_file(&file_path, &content) {
@@ -239,8 +288,13 @@ impl Backend {
                     // Convert ShapeErrors to LSP Diagnostics
                     let diagnostics: Vec<_> = errors
                         .into_iter()
-                        .filter_map(|(_, error)| error.to_diagnostic(&content))
+                        .filter_map(|(_, error)| error.to_diagnostic(&content, &uri_string))
                         .collect();
+                    log::info!(
+                        "Analysis complete: {} errors found in {}",
+                        error_count,
+                        file_path.display()
+                    );
                     (diagnostics, error_count)
                 }
                 Err(e) => {
@@ -250,7 +304,10 @@ impl Backend {
             }
         })
         .await
-        .unwrap_or((Vec::new(), 0));
+        .unwrap_or_else(|e| {
+            log::error!("Analysis task panicked: {:?}", e);
+            (Vec::new(), 0)
+        });
 
         // Log results
         if error_count > 0 {

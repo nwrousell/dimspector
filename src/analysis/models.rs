@@ -11,6 +11,32 @@ use crate::analysis::types::Collection;
 use crate::analysis::{DimKind, DimVar, Shape, Variable};
 use crate::ir::{Function, Identifier, Parameter, intern, resolve};
 
+/// Holds spans for positional and keyword arguments
+#[derive(Debug, Clone, Default)]
+pub struct ArgSpans {
+    pub positional: Vec<SourceSpan>,
+    pub keyword: HashMap<Identifier, SourceSpan>,
+}
+
+impl ArgSpans {
+    pub fn new(positional: Vec<SourceSpan>, keyword: HashMap<Identifier, SourceSpan>) -> Self {
+        Self {
+            positional,
+            keyword,
+        }
+    }
+
+    /// Get span for a positional argument by index
+    pub fn get_positional(&self, idx: usize) -> Option<SourceSpan> {
+        self.positional.get(idx).copied()
+    }
+
+    /// Get span for a keyword argument by name
+    pub fn get_keyword(&self, name: Identifier) -> Option<SourceSpan> {
+        self.keyword.get(&name).copied()
+    }
+}
+
 macro_rules! get_args {
     ($args:expr, $model_name:ident, $( $param:ident : $method:ident => $type_name:expr ),+ $(,)?) => {
         {
@@ -112,6 +138,7 @@ pub trait Model: std::fmt::Debug + Send + Sync {
         args: Vec<&Variable>,
         kwargs: HashMap<Identifier, &Variable>,
         span: SourceSpan,
+        arg_spans: &ArgSpans,
     ) -> Result<Shape>;
 }
 
@@ -266,6 +293,7 @@ impl Model for TensorFromSizeModel {
         args: Vec<&Variable>,
         kwargs: HashMap<Identifier, &Variable>,
         _span: SourceSpan,
+        _arg_spans: &ArgSpans,
     ) -> Result<Shape> {
         let args = resolve_args(args, kwargs, &VARIADIC_SIZE_SIGNATURE);
         let size_tuple = args
@@ -306,6 +334,7 @@ impl Model for RandIntModel {
         args: Vec<&Variable>,
         kwargs: HashMap<Identifier, &Variable>,
         _span: SourceSpan,
+        _arg_spans: &ArgSpans,
     ) -> Result<Shape> {
         let args = resolve_args(args, kwargs, &RANDINT_SIGNATURE);
         let size = get_args!(args, RandInt,
@@ -325,6 +354,7 @@ impl Model for BroadcastModel {
         args: Vec<&Variable>,
         kwargs: HashMap<Identifier, &Variable>,
         span: SourceSpan,
+        _arg_spans: &ArgSpans,
     ) -> Result<Shape> {
         let args = resolve_args(args, kwargs, &INPUT_OTHER_SIGNATURE);
         let (l_shape, r_shape) = get_args!(args, Matmul,
@@ -332,16 +362,27 @@ impl Model for BroadcastModel {
             other: as_shape_dims => "Tensor",
         )?;
 
+        let left_shape = Shape(l_shape.clone());
+        let right_shape = Shape(r_shape.clone());
+
         let mut out_shape = Vec::new();
-        for pair in l_shape.iter().rev().zip_longest(r_shape.iter().rev()) {
+        for (dim_position, pair) in l_shape.iter().rev().zip_longest(r_shape.iter().rev()).enumerate() {
             let next_dim = match pair {
                 Both(l_dim, r_dim) => {
                     if l_dim.is_one() {
                         r_dim.clone()
                     } else if r_dim.is_one() {
                         l_dim.clone()
+                    } else if l_dim != r_dim {
+                        return Err(anyhow!(ShapeError::BroadcastMismatch {
+                            left_shape: left_shape.clone(),
+                            right_shape: right_shape.clone(),
+                            dim_position: dim_position + 1, // 1-indexed from the right
+                            left_dim: l_dim.clone(),
+                            right_dim: r_dim.clone(),
+                            span,
+                        }));
                     } else {
-                        constraint_equal(l_dim, r_dim, span)?;
                         l_dim.clone()
                     }
                 }
@@ -367,6 +408,7 @@ impl Model for MatmulModel {
         args: Vec<&Variable>,
         kwargs: HashMap<Identifier, &Variable>,
         span: SourceSpan,
+        _arg_spans: &ArgSpans,
     ) -> Result<Shape> {
         // TODO: also deal with out (mutates)
         let args = resolve_args(args, kwargs, &INPUT_OTHER_SIGNATURE);
@@ -375,6 +417,23 @@ impl Model for MatmulModel {
             other: as_shape_dims => "Tensor",
         )?;
 
+        let left_shape = Shape(input_shape.clone());
+        let right_shape = Shape(other_shape.clone());
+
+        // Helper to check matmul inner dimension constraint
+        let check_matmul_dims = |left_dim: &DimVar, right_dim: &DimVar| -> Result<()> {
+            if left_dim != right_dim {
+                return Err(anyhow!(ShapeError::MatmulMismatch {
+                    left_shape: left_shape.clone(),
+                    right_shape: right_shape.clone(),
+                    left_dim: left_dim.clone(),
+                    right_dim: right_dim.clone(),
+                    span,
+                }));
+            }
+            Ok(())
+        };
+
         match (input_shape.len(), other_shape.len()) {
             (0, _) | (_, 0) => {
                 panic!("matmul with a scalar is not allowed!")
@@ -382,25 +441,25 @@ impl Model for MatmulModel {
 
             // dot product
             (1, 1) => {
-                constraint_equal(&input_shape[0], &other_shape[0], span)?;
+                check_matmul_dims(&input_shape[0], &other_shape[0])?;
                 Ok(Shape(vec![])) // Scalar result
             }
 
             // matrix-matrix
             (2, 2) => {
-                constraint_equal(&input_shape[1], &other_shape[0], span)?;
+                check_matmul_dims(&input_shape[1], &other_shape[0])?;
                 Ok(Shape(vec![input_shape[0].clone(), other_shape[1].clone()]))
             }
 
             // prepend 1, multiply, remove prepended dim
             (1, 2) => {
-                constraint_equal(&input_shape[0], &other_shape[0], span)?;
+                check_matmul_dims(&input_shape[0], &other_shape[0])?;
                 Ok(Shape(vec![other_shape[1].clone()]))
             }
 
             // matrix-vector product
             (2, 1) => {
-                constraint_equal(&input_shape[1], &other_shape[0], span)?;
+                check_matmul_dims(&input_shape[1], &other_shape[0])?;
                 Ok(Shape(vec![input_shape[0].clone()]))
             }
 
@@ -442,7 +501,7 @@ impl Model for MatmulModel {
                 };
 
                 // Check matrix dimension constraint: input[-1] == other[-2]
-                constraint_equal(&input_matrix.1[0], &other_matrix.0[0], span)?;
+                check_matmul_dims(&input_matrix.1[0], &other_matrix.0[0])?;
 
                 // Broadcast batch dimensions (for now, just take the longer one)
                 // In a full implementation, we'd need proper broadcasting logic
@@ -486,6 +545,7 @@ impl Model for PassthroughModel {
         args: Vec<&Variable>,
         kwargs: HashMap<Identifier, &Variable>,
         _span: SourceSpan,
+        _arg_spans: &ArgSpans,
     ) -> Result<Shape> {
         let args = resolve_args(args, kwargs, &SINGLE_TENSOR_INPUT_SIGNATURE);
         let input_shape = get_args!(args, Eltwise,
@@ -512,6 +572,7 @@ impl Model for RdxModel {
         args: Vec<&Variable>,
         kwargs: HashMap<Identifier, &Variable>,
         _span: SourceSpan,
+        _arg_spans: &ArgSpans,
     ) -> Result<Shape> {
         let args = resolve_args(args, kwargs, &RDX_SIGNATURE);
         let input_shape = get_args!(args, Matmul,
@@ -579,6 +640,7 @@ impl Model for ConcatModel {
         args: Vec<&Variable>,
         kwargs: HashMap<Identifier, &Variable>,
         span: SourceSpan,
+        _arg_spans: &ArgSpans,
     ) -> Result<Shape> {
         let args = resolve_args(args, kwargs, &CONCAT_SIGNATURE);
         let (tensors, dim) = get_args!(args, Concat,
@@ -646,7 +708,8 @@ impl Model for ReshapeModel {
         &self,
         args: Vec<&Variable>,
         kwargs: HashMap<Identifier, &Variable>,
-        _span: SourceSpan,
+        span: SourceSpan,
+        _arg_spans: &ArgSpans,
     ) -> Result<Shape> {
         let args = resolve_args(args, kwargs, &RESHAPE_SIGNATURE);
         let (src_shape, tgt_shape) = get_args!(args, Concat,
@@ -696,7 +759,8 @@ impl Model for ReshapeModel {
         if tgt_shape_prod != src_shape_prod {
             return Err(anyhow!(ShapeError::BadReshape {
                 src: Shape(src_shape),
-                tgt: Shape(tgt_shape)
+                tgt: Shape(tgt_shape),
+                span,
             }));
         }
 
@@ -721,6 +785,7 @@ impl Model for TransposeModel {
         args: Vec<&Variable>,
         kwargs: HashMap<Identifier, &Variable>,
         _span: SourceSpan,
+        _arg_spans: &ArgSpans,
     ) -> Result<Shape> {
         let args = resolve_args(args, kwargs, &TRANSPOSE_SIGNATURE);
         let (mut input_dims, dim0, dim1) = get_args!(args, Transpose,
@@ -751,6 +816,7 @@ impl Model for TransposeModel {
 
 #[derive(Debug, Clone)]
 pub struct SignatureModel {
+    pub name: String,
     pub params: Vec<Parameter>,
     // TODO: in the future with the possibility of mutations,
     // doesn't necc need to have return annotation
@@ -758,9 +824,9 @@ pub struct SignatureModel {
 }
 
 impl SignatureModel {
-    fn new(func: &Function) -> Self {
-        // construct signature from function sig
+    pub fn new(func: &Function) -> Self {
         SignatureModel {
+            name: resolve(func.identifier),
             params: func.params.clone(),
             returns: func.returns.clone(),
         }
@@ -772,16 +838,34 @@ impl Model for SignatureModel {
         args: Vec<&Variable>,
         kwargs: HashMap<Identifier, &Variable>,
         span: SourceSpan,
+        arg_spans: &ArgSpans,
     ) -> Result<Shape> {
-        let mut param_to_arg: HashMap<String, DimVar> = HashMap::new();
-        for argv in args.iter().zip_longest(self.params.iter()) {
-            let (arg_v, param_v) = match argv {
+        // Track dimvar bindings with the span, shape, and param name where they were first bound
+        // (DimVar, SourceSpan, Option<Shape>, param_name) - shape is None for single DimVar args
+        let mut param_to_arg: HashMap<String, (DimVar, SourceSpan, Option<Shape>, String)> =
+            HashMap::new();
+
+        // Track deferred constraints for expression dimvars (like k-1) that need substitution
+        struct DeferredConstraint<'a> {
+            arg_dv: &'a DimVar,
+            param_dv: &'a DimVar,
+            param_name: String,
+            // None for single DimVar params, Some for Tensor params
+            arg_shape: Option<Shape>,
+            param_shape: Option<Shape>,
+            arg_span: SourceSpan,
+        }
+        let mut deferred_constraints: Vec<DeferredConstraint> = Vec::new();
+
+        for (arg_idx, argv) in args.iter().zip_longest(self.params.iter()).enumerate() {
+            let (arg_v, param, arg_span) = match argv {
                 EitherOrBoth::Both(arg_v, param) => {
                     let Some(param_v) = &param.1 else {
                         // param doesn't have tensor annotation, skip
                         continue;
                     };
-                    (arg_v, param_v)
+                    let arg_span = arg_spans.get_positional(arg_idx).unwrap_or(span);
+                    (arg_v, (param, param_v), arg_span)
                 }
                 EitherOrBoth::Right(param) => {
                     // do a lookup into kwargs
@@ -791,106 +875,182 @@ impl Model for SignatureModel {
                     let Some(arg_v) = kwargs.get(&param.0) else {
                         continue;
                     };
-                    (arg_v, param_v)
+                    let arg_span = arg_spans.get_keyword(param.0).unwrap_or(span);
+                    (arg_v, (param, param_v), arg_span)
                 }
                 EitherOrBoth::Left(_) => unreachable!("args should not be longer than params"),
             };
+
+            let (param_info, param_v) = param;
+            let param_name = resolve(param_info.0);
+
             match (arg_v, param_v) {
-                (Variable::DimVar(arg_dv), Variable::DimVar(param_dvar)) => {
-                    match param_dvar.kind() {
+                (Variable::DimVar(arg_dv), Variable::DimVar(param_dv)) => {
+                    match param_dv.kind() {
                         DimKind::Named(name) => {
-                            if let Some(prev_arg_dv) = param_to_arg.get(&name) {
-                                // TODO: we see a caller side mismatch here, do something with it
+                            if let Some((prev_arg_dv, first_span, first_shape, first_param_name)) =
+                                param_to_arg.get(&name)
+                            {
                                 if prev_arg_dv != arg_dv {
-                                    return Err(anyhow!(ShapeError::mismatched(
-                                        prev_arg_dv,
-                                        arg_dv,
-                                        span
-                                    )));
+                                    return Err(anyhow!(ShapeError::InconsistentDimVars {
+                                        func_name: self.name.clone(),
+                                        dimvar_name: name.clone(),
+                                        first_param_name: first_param_name.clone(),
+                                        second_param_name: param_name.clone(),
+                                        first_resolved: prev_arg_dv.clone(),
+                                        second_resolved: arg_dv.clone(),
+                                        first_shape: first_shape.clone(),
+                                        second_shape: None,
+                                        first_span: *first_span,
+                                        second_span: arg_span,
+                                    }));
                                 }
                             } else {
-                                param_to_arg.insert(name, arg_dv.clone());
+                                param_to_arg.insert(
+                                    name,
+                                    (arg_dv.clone(), arg_span, None, param_name.clone()),
+                                );
                             }
                         }
-                        // nothing to do, as if we enforce that there is a singleton of each dvar in params,
-                        // the above case will insert it into the map
-                        _ => (),
+                        DimKind::Concrete(_) => {
+                            // Concrete dims can be checked immediately
+                            if arg_dv != param_dv {
+                                return Err(anyhow!(ShapeError::MismatchedDims {
+                                    dim1: arg_dv.clone(),
+                                    dim2: param_dv.clone(),
+                                    span: arg_span,
+                                }));
+                            }
+                        }
+                        // Expression dimvars (Add, Mul) need deferred checking
+                        _ => {
+                            deferred_constraints.push(DeferredConstraint {
+                                arg_dv,
+                                param_dv,
+                                param_name: param_name.clone(),
+                                arg_shape: None,
+                                param_shape: None,
+                                arg_span,
+                            });
+                        }
                     }
                 }
                 (Variable::Tensor(arg_shape), Variable::Tensor(param_shape)) => {
                     let arg_dims = &arg_shape.0;
                     let param_dims = &param_shape.0;
                     if arg_dims.len() != param_dims.len() {
-                        // TODO: in the future we should handle ellipsis
-                        return Err(anyhow!(ShapeError::unequal_rank(
-                            arg_shape,
-                            param_shape,
-                            arg_dims.len(),
-                            param_dims.len(),
-                            span,
-                        )));
+                        return Err(anyhow!(ShapeError::UnequalRank {
+                            tensor_1: arg_shape.clone(),
+                            tensor_2: param_shape.clone(),
+                            rank_1: arg_dims.len(),
+                            rank_2: param_dims.len(),
+                            span: arg_span,
+                        }));
                     }
-
-                    let mut eq_constraints: Vec<(&DimVar, &DimVar)> = Vec::new();
 
                     for (arg_dv, param_dv) in arg_dims.iter().zip(param_dims.iter()) {
                         match param_dv.kind() {
                             DimKind::Named(name) => {
-                                if let Some(prev_arg_dv) = param_to_arg.get(&name) {
-                                    // TODO: we see a caller side mismatch here, do something with it
+                                if let Some((
+                                    prev_arg_dv,
+                                    first_span,
+                                    first_shape,
+                                    first_param_name,
+                                )) = param_to_arg.get(&name)
+                                {
                                     if prev_arg_dv != arg_dv {
-                                        return Err(anyhow!(ShapeError::mismatched(
-                                            prev_arg_dv,
-                                            arg_dv,
-                                            span
-                                        )));
+                                        return Err(anyhow!(ShapeError::InconsistentDimVars {
+                                            func_name: self.name.clone(),
+                                            dimvar_name: name.clone(),
+                                            first_param_name: first_param_name.clone(),
+                                            second_param_name: param_name.clone(),
+                                            first_resolved: prev_arg_dv.clone(),
+                                            second_resolved: arg_dv.clone(),
+                                            first_shape: first_shape.clone(),
+                                            second_shape: Some(arg_shape.clone()),
+                                            first_span: *first_span,
+                                            second_span: arg_span,
+                                        }));
                                     }
                                 } else {
-                                    param_to_arg.insert(name, arg_dv.clone());
+                                    param_to_arg.insert(
+                                        name,
+                                        (
+                                            arg_dv.clone(),
+                                            arg_span,
+                                            Some(arg_shape.clone()),
+                                            param_name.clone(),
+                                        ),
+                                    );
                                 }
                             }
-
-                            _ => eq_constraints.push((arg_dv, param_dv)),
-                        }
-                    }
-
-                    // TODO
-                    // (a: T[x-1], b: T[x-1])
-                    // need to disallow this ^ by enforcing a singleton DimVar::Named for each symbolic dimvar  in the signature
-
-                    // check constraints are good
-                    for (caller_dv, callee_dv) in eq_constraints {
-                        if callee_dv.substitute(&param_to_arg)? != *caller_dv {
-                            return Err(anyhow!(ShapeError::mismatched(
-                                caller_dv, callee_dv, span
-                            )));
+                            // Expression dimvars need deferred checking after all named ones are bound
+                            _ => {
+                                deferred_constraints.push(DeferredConstraint {
+                                    arg_dv,
+                                    param_dv,
+                                    param_name: param_name.clone(),
+                                    arg_shape: Some(arg_shape.clone()),
+                                    param_shape: Some(param_shape.clone()),
+                                    arg_span,
+                                });
+                            }
                         }
                     }
                 }
                 _ => continue,
             }
         }
-        // TODO: models currently only return one shape, should capture tuple returns in the future
-        // for now, just assuming this is the case
+
+        // Build substitution map (without spans/shapes) for constraint checking
+        let substitution_map: HashMap<String, DimVar> = param_to_arg
+            .iter()
+            .map(|(k, (dv, _, _, _))| (k.clone(), dv.clone()))
+            .collect();
+
+        // Check deferred constraints (expression dimvars like k-1)
+        for constraint in deferred_constraints {
+            let expected_dv = constraint.param_dv.substitute(&substitution_map)?;
+            if expected_dv != *constraint.arg_dv {
+                // Use SignatureParamMismatch for tensor shapes, MismatchedDims for single dimvars
+                match (constraint.param_shape, constraint.arg_shape) {
+                    (Some(param_shape), Some(arg_shape)) => {
+                        return Err(anyhow!(ShapeError::SignatureParamMismatch {
+                            func_name: self.name.clone(),
+                            param_name: constraint.param_name,
+                            expected: param_shape,
+                            actual: arg_shape,
+                            span: constraint.arg_span,
+                        }));
+                    }
+                    _ => {
+                        return Err(anyhow!(ShapeError::MismatchedDims {
+                            dim1: constraint.arg_dv.clone(),
+                            dim2: expected_dv,
+                            span: constraint.arg_span,
+                        }));
+                    }
+                }
+            }
+        }
+
+        // Handle return type
         let ret_shape = {
             let Some(returns) = &self.returns else {
-                // TODO: this shouldn't be an error. We need to generalize the effect of a function/method call to allow for no return
-                let err = ShapeError::UninferrableCall {};
-                return Err(anyhow!(err));
+                return Err(anyhow!(ShapeError::UninferrableCall {}));
             };
 
             match &returns[0] {
                 Variable::Tensor(Shape(shape)) => shape,
-                // TODO: handle returning dimvars
-                // return of uninferrablecall should result in Variable::Top return from whatever's
-                // calling this atm
                 _ => return Err(anyhow!(ShapeError::UninferrableCall {})),
             }
         };
+
         let ret_shape = ret_shape
             .iter()
-            .map(|dv| dv.substitute(&param_to_arg))
+            .map(|dv| dv.substitute(&substitution_map))
             .collect::<Result<Vec<_>>>()?;
+
         Ok(Shape(ret_shape))
     }
 }
