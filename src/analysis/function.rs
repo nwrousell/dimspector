@@ -20,6 +20,7 @@ pub struct FunctionAnalysis {
     pub id: Identifier,
     pub state: HashMap<Location, AnalysisDomain>,
     pub function: Function,
+    pub inferred_returns: HashSet<Variable>,
 }
 
 impl FunctionAnalysis {
@@ -51,6 +52,7 @@ impl FunctionAnalysis {
             id: func.identifier.clone(),
             state,
             function: func.clone(),
+            inferred_returns: HashSet::new(),
         }
     }
 
@@ -125,6 +127,7 @@ impl FunctionAnalysis {
                             HashMap::new(),
                             span,
                             &arg_spans,
+                            Some(global),
                         )?;
                         out_shape
                     } else {
@@ -133,6 +136,7 @@ impl FunctionAnalysis {
                             HashMap::new(),
                             span,
                             &arg_spans,
+                            Some(global),
                         )?;
                         out_shape
                     }
@@ -512,7 +516,7 @@ impl FunctionAnalysis {
                         } else {
                             // Use the signature model to infer the result
                             let result_shape =
-                                signature_model.infer(args, kwargs, span, arg_spans)?;
+                                signature_model.infer(args, kwargs, span, arg_spans, Some(global))?;
                             out_vars.insert(result_shape);
                         }
                     }
@@ -592,7 +596,7 @@ impl FunctionAnalysis {
                     if any_top {
                         out_vars.insert(Variable::Top);
                     } else {
-                        out_vars.insert(model.infer(args, kwargs, span, arg_spans)?);
+                        out_vars.insert(model.infer(args, kwargs, span, arg_spans, Some(global))?);
                     }
                 }
             }
@@ -883,7 +887,8 @@ impl FunctionAnalysis {
             }
             Terminator::Return(expr) => {
                 if let Some(expr) = expr {
-                    self.eval_expr(domain, expr, global)?;
+                    let vars = self.eval_expr(domain, expr, global)?;
+                    self.inferred_returns.extend(vars);
                 }
             }
             Terminator::Jump(_) => (),

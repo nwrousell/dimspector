@@ -294,7 +294,8 @@ impl ClassAnalysis {
         let full_method_name = format!("{}.{}", resolve(self.id), resolve(method_name));
 
         Ok(SignatureModel {
-            name: full_method_name,
+            name: full_method_name.clone(),
+            canonical_name: full_method_name,
             params: substituted_params,
             returns: substituted_returns,
         })

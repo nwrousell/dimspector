@@ -214,7 +214,16 @@ pub fn function_with_inferred_shapes_to_string(
     if let Some(returns) = &ir.returns {
         output.push_str(" -> ");
         output.push_str(&returns.iter().join(", "));
-        output.push_str("");
+    } else if !func_facts.inferred_returns.is_empty() {
+        // Show inferred return type when no explicit annotation
+        output.push_str(" -> (inferred) ");
+        let inferred_strs: Vec<_> = func_facts
+            .inferred_returns
+            .iter()
+            .map(|v| format!("{}", v))
+            .sorted()
+            .collect();
+        output.push_str(&inferred_strs.join(" | "));
     }
     output.push_str(":\n");
 

@@ -1,9 +1,10 @@
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, RwLock};
 
 use itertools::Itertools;
 
 use crate::analysis::models::ModelContext;
+use crate::analysis::types::Variable;
 use crate::ir::{Class, File, Function, Identifier, Project, intern, resolve};
 use crate::parse::SymbolTable;
 use anyhow::Result;
@@ -19,16 +20,37 @@ pub struct GlobalAnalysis {
     pub classes: HashMap<Identifier, ClassAnalysis>,
     pub models: Arc<ModelContext>,
     pub symbol_table: Arc<SymbolTable>,
+    // On-demand analysis support
+    inferred_returns: RwLock<HashMap<String, Variable>>,
+    analyzing_stack: RwLock<HashSet<String>>,
+    function_irs: HashMap<String, Function>,
 }
 
 impl GlobalAnalysis {
     pub fn new(symbol_table: &SymbolTable, functions: &Vec<Function>) -> Self {
         let symbol_table = Arc::new(symbol_table.clone());
+
+        // Build function_irs map: canonical name -> Function
+        let function_irs: HashMap<String, Function> = functions
+            .iter()
+            .map(|f| {
+                let local_name = resolve(f.identifier);
+                let canonical = symbol_table
+                    .resolve(&f.file_path, &local_name)
+                    .cloned()
+                    .unwrap_or(local_name);
+                (canonical, f.clone())
+            })
+            .collect();
+
         Self {
             functions: HashMap::new(),
             classes: HashMap::new(),
             models: Arc::new(ModelContext::new(functions, &symbol_table)),
             symbol_table,
+            inferred_returns: RwLock::new(HashMap::new()),
+            analyzing_stack: RwLock::new(HashSet::new()),
+            function_irs,
         }
     }
 
@@ -163,5 +185,75 @@ impl GlobalAnalysis {
         }
 
         output
+    }
+
+    // On-demand analysis helper methods
+
+    /// Get a cached inferred return type for a function
+    pub fn get_cached_return(&self, name: &str) -> Option<Variable> {
+        self.inferred_returns.read().unwrap().get(name).cloned()
+    }
+
+    /// Cache an inferred return type for a function
+    pub fn cache_return(&self, name: &str, var: Variable) {
+        self.inferred_returns.write().unwrap().insert(name.to_string(), var);
+    }
+
+    /// Check if a function is currently being analyzed (for cycle detection)
+    pub fn is_analyzing(&self, name: &str) -> bool {
+        self.analyzing_stack.read().unwrap().contains(name)
+    }
+
+    /// Mark a function as currently being analyzed
+    pub fn mark_analyzing(&self, name: &str) {
+        self.analyzing_stack.write().unwrap().insert(name.to_string());
+    }
+
+    /// Unmark a function from the analyzing stack
+    pub fn unmark_analyzing(&self, name: &str) {
+        self.analyzing_stack.write().unwrap().remove(name);
+    }
+
+    /// Get the Function IR for a given canonical name
+    pub fn get_function_ir(&self, name: &str) -> Option<&Function> {
+        self.function_irs.get(name)
+    }
+
+    /// Analyze a function on-demand and return the inferred return type.
+    /// This is called when SignatureModel encounters a function without return annotation.
+    pub fn analyze_on_demand(&self, canonical_name: &str) -> Result<Variable> {
+        let func = self
+            .function_irs
+            .get(canonical_name)
+            .ok_or_else(|| anyhow::anyhow!(ShapeError::UninferrableCall {}))?
+            .clone();
+
+        let mut func_analysis = FunctionAnalysis::new(&func, None);
+        func_analysis.analyze_func(&func, self)?;
+
+        // Get the inferred return - join all possible return values
+        if func_analysis.inferred_returns.is_empty() {
+            // Function has no return statements with values
+            return Err(anyhow::anyhow!(ShapeError::UninferrableCall {}));
+        }
+
+        // For now, if there's exactly one return type, use it.
+        // If there are multiple, return Top (conservative).
+        if func_analysis.inferred_returns.len() == 1 {
+            Ok(func_analysis.inferred_returns.into_iter().next().unwrap())
+        } else {
+            // Multiple return paths - join them conservatively
+            // For now, just return the first non-Top, or Top if all are Top
+            let non_top: Vec<_> = func_analysis
+                .inferred_returns
+                .into_iter()
+                .filter(|v| !matches!(v, Variable::Top))
+                .collect();
+            if non_top.len() == 1 {
+                Ok(non_top.into_iter().next().unwrap())
+            } else {
+                Ok(Variable::Top)
+            }
+        }
     }
 }

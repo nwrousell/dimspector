@@ -11,7 +11,7 @@ use miette::SourceSpan;
 
 use crate::analysis::errors::ShapeError;
 use crate::analysis::types::Collection;
-use crate::analysis::{ClassAnalysis, DimKind, DimVar, Shape, Variable};
+use crate::analysis::{ClassAnalysis, DimKind, DimVar, GlobalAnalysis, Shape, Variable};
 use crate::ir::{Function, Identifier, Parameter, intern, resolve};
 
 /// Holds spans for positional and keyword arguments
@@ -96,8 +96,8 @@ impl UserModels {
                     .cloned()
                     .unwrap_or(local_name);
                 (
-                    canonical,
-                    Box::new(SignatureModel::new(f)) as Box<dyn Model>,
+                    canonical.clone(),
+                    Box::new(SignatureModel::new(f, canonical)) as Box<dyn Model>,
                 )
             })
             .collect();
@@ -144,6 +144,7 @@ pub trait Model: std::fmt::Debug + Send + Sync {
         kwargs: HashMap<Identifier, &Variable>,
         span: SourceSpan,
         arg_spans: &ArgSpans,
+        global: Option<&GlobalAnalysis>,
     ) -> Result<Variable>;
 }
 
@@ -349,6 +350,7 @@ impl Model for TensorFromSizeModel {
         kwargs: HashMap<Identifier, &Variable>,
         _span: SourceSpan,
         _arg_spans: &ArgSpans,
+        _global: Option<&GlobalAnalysis>,
     ) -> Result<Variable> {
         let args = resolve_args(args, kwargs, &VARIADIC_SIZE_SIGNATURE);
         let size_tuple = args
@@ -390,6 +392,7 @@ impl Model for RandIntModel {
         kwargs: HashMap<Identifier, &Variable>,
         _span: SourceSpan,
         _arg_spans: &ArgSpans,
+        _global: Option<&GlobalAnalysis>,
     ) -> Result<Variable> {
         let args = resolve_args(args, kwargs, &RANDINT_SIGNATURE);
         let size = get_args!(args, RandInt,
@@ -410,6 +413,7 @@ impl Model for BroadcastModel {
         kwargs: HashMap<Identifier, &Variable>,
         span: SourceSpan,
         _arg_spans: &ArgSpans,
+        _global: Option<&GlobalAnalysis>,
     ) -> Result<Variable> {
         let args = resolve_args(args, kwargs, &INPUT_OTHER_SIGNATURE);
         let (l_shape, r_shape) = get_args!(args, Matmul,
@@ -469,6 +473,7 @@ impl Model for MatmulModel {
         kwargs: HashMap<Identifier, &Variable>,
         span: SourceSpan,
         _arg_spans: &ArgSpans,
+        _global: Option<&GlobalAnalysis>,
     ) -> Result<Variable> {
         // TODO: also deal with out (mutates)
         let args = resolve_args(args, kwargs, &INPUT_OTHER_SIGNATURE);
@@ -609,6 +614,7 @@ impl Model for PassthroughModel {
         kwargs: HashMap<Identifier, &Variable>,
         _span: SourceSpan,
         _arg_spans: &ArgSpans,
+        _global: Option<&GlobalAnalysis>,
     ) -> Result<Variable> {
         let args = resolve_args(args, kwargs, &SINGLE_TENSOR_INPUT_SIGNATURE);
         let input_shape = get_args!(args, Eltwise,
@@ -636,6 +642,7 @@ impl Model for RdxModel {
         kwargs: HashMap<Identifier, &Variable>,
         _span: SourceSpan,
         _arg_spans: &ArgSpans,
+        _global: Option<&GlobalAnalysis>,
     ) -> Result<Variable> {
         let args = resolve_args(args, kwargs, &RDX_SIGNATURE);
         let input_shape = get_args!(args, Matmul,
@@ -714,6 +721,7 @@ impl Model for ConcatModel {
         kwargs: HashMap<Identifier, &Variable>,
         span: SourceSpan,
         _arg_spans: &ArgSpans,
+        _global: Option<&GlobalAnalysis>,
     ) -> Result<Variable> {
         let args = resolve_args(args, kwargs, &CONCAT_SIGNATURE);
         let (tensors, dim) = get_args!(args, Concat,
@@ -783,6 +791,7 @@ impl Model for ReshapeModel {
         kwargs: HashMap<Identifier, &Variable>,
         span: SourceSpan,
         _arg_spans: &ArgSpans,
+        _global: Option<&GlobalAnalysis>,
     ) -> Result<Variable> {
         let args = resolve_args(args, kwargs, &RESHAPE_SIGNATURE);
         let (src_shape, tgt_shape) = get_args!(args, Concat,
@@ -855,6 +864,7 @@ impl Model for TensorReshapeModel {
         kwargs: HashMap<Identifier, &Variable>,
         span: SourceSpan,
         arg_spans: &ArgSpans,
+        global: Option<&GlobalAnalysis>,
     ) -> Result<Variable> {
         let resolved_args = resolve_args(args, kwargs, &TENSOR_RESHAPE_SIGNATURE);
         let variadic_tuple = resolved_args
@@ -878,7 +888,7 @@ impl Model for TensorReshapeModel {
         };
 
         let reshape_model = ReshapeModel;
-        reshape_model.infer(vec![input, &shape_tuple], HashMap::new(), span, arg_spans)
+        reshape_model.infer(vec![input, &shape_tuple], HashMap::new(), span, arg_spans, global)
     }
 }
 
@@ -900,6 +910,7 @@ impl Model for TransposeModel {
         kwargs: HashMap<Identifier, &Variable>,
         _span: SourceSpan,
         _arg_spans: &ArgSpans,
+        _global: Option<&GlobalAnalysis>,
     ) -> Result<Variable> {
         let args = resolve_args(args, kwargs, &TRANSPOSE_SIGNATURE);
         let (mut input_dims, dim0, dim1) = get_args!(args, Transpose,
@@ -931,6 +942,7 @@ impl Model for TransposeModel {
 #[derive(Debug, Clone)]
 pub struct SignatureModel {
     pub name: String,
+    pub canonical_name: String,
     pub params: Vec<Parameter>,
     // TODO: in the future with the possibility of mutations,
     // doesn't necc need to have return annotation
@@ -938,9 +950,10 @@ pub struct SignatureModel {
 }
 
 impl SignatureModel {
-    pub fn new(func: &Function) -> Self {
+    pub fn new(func: &Function, canonical_name: String) -> Self {
         SignatureModel {
             name: resolve(func.identifier),
+            canonical_name,
             params: func.params.clone(),
             returns: func.returns.clone(),
         }
@@ -953,6 +966,7 @@ impl Model for SignatureModel {
         kwargs: HashMap<Identifier, &Variable>,
         span: SourceSpan,
         arg_spans: &ArgSpans,
+        global: Option<&GlobalAnalysis>,
     ) -> Result<Variable> {
         // Track dimvar bindings with the span, shape, and param name where they were first bound
         // (DimVar, SourceSpan, Option<Shape>, param_name) - shape is None for single DimVar args
@@ -1148,14 +1162,40 @@ impl Model for SignatureModel {
             }
         }
 
-        let Some(ret_var) = &self.returns else {
-            // TODO: we need to be able to use our analysis inferred return shape here
-            return Err(anyhow!(ShapeError::UninferrableCall {}));
-        };
+        let ret_var = if let Some(ret_var) = &self.returns {
+            ret_var
+                .first()
+                .ok_or_else(|| anyhow!(ShapeError::UninferrableCall {}))?
+                .clone()
+        } else {
+            // No return annotation - trigger on-demand analysis
+            let Some(global) = global else {
+                return Err(anyhow!(ShapeError::UninferrableCall {}));
+            };
 
-        let ret_var = ret_var
-            .first()
-            .ok_or_else(|| anyhow!(ShapeError::UninferrableCall {}))?;
+            // Check cache first
+            if let Some(cached) = global.get_cached_return(&self.canonical_name) {
+                cached
+            } else {
+                // Cycle detection - return Top for recursive calls (conservative)
+                if global.is_analyzing(&self.canonical_name) {
+                    return Ok(Variable::Top);
+                }
+
+                // Analyze on-demand
+                global.mark_analyzing(&self.canonical_name);
+                let result = global.analyze_on_demand(&self.canonical_name);
+                global.unmark_analyzing(&self.canonical_name);
+
+                match result {
+                    Ok(var) => {
+                        global.cache_return(&self.canonical_name, var.clone());
+                        var
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+        };
 
         let substituted_ret = ret_var.substitute(&substitution_map)?;
 
