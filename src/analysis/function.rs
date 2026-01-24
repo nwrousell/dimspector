@@ -845,18 +845,57 @@ impl FunctionAnalysis {
         if let Some(target) = &stmt.target {
             match &target.kind {
                 ExprKind::Ident(name) => {
-                    domain.insert(name.clone(), res_var);
+                    domain.insert(*name, res_var);
                 }
                 ExprKind::Attribute { value, attr } => {
                     // Handle self.X assignments for methods
-                    if let ExprKind::Ident(self_ident) = &value.kind {
-                        if resolve(*self_ident) == "self" {
-                            // Store as "self.X" in domain
-                            let self_attr_name = intern(&format!("self.{}", resolve(*attr)));
-                            domain.insert(self_attr_name, res_var);
-                        }
+                    if let ExprKind::Ident(self_ident) = &value.kind
+                        && resolve(*self_ident) == "self"
+                    {
+                        // Store as "self.X" in domain
+                        let self_attr_name = intern(&format!("self.{}", resolve(*attr)));
+                        domain.insert(self_attr_name, res_var);
                     }
-                    // Ignore other attribute assignments for now
+                }
+                // Ignore other attribute assignments for now
+                ExprKind::Tuple(names) => {
+                    if res_var.iter().any(|v| {
+                        matches!(
+                            v,
+                            Variable::Collection(Collection::Tuple(_) | Collection::List(_))
+                        )
+                    }) {
+                        // one of the result vars should allow for assignment
+                        // for each thing we assign to, the permutation of possibilities
+                        // are interdependent, but we take the loss in precision
+                        // just unioning over position wise sets
+                        let mut out_combs: Vec<HashSet<Variable>> =
+                            names.iter().map(|_| HashSet::new()).collect();
+
+                        for var in res_var.iter() {
+                            if let Variable::Collection(
+                                Collection::List(elts) | Collection::Tuple(elts),
+                            ) = var
+                            {
+                                assert_eq!(elts.len(), names.len());
+                                out_combs.iter_mut().zip_eq(elts.iter()).for_each(|(s, v)| {
+                                    s.insert(v.clone());
+                                });
+                            } else {
+                                out_combs.iter_mut().for_each(|s| {
+                                    s.insert(Variable::Top);
+                                });
+                            }
+                        }
+
+                        names.iter().zip_eq(out_combs.iter()).for_each(|(n, vs)| {
+                            if let ExprKind::Ident(name) = &n.kind {
+                                domain.insert(*name, vs.clone());
+                            }
+                        });
+                    } else {
+                        // else we should map everything to top
+                    }
                 }
                 _ => {
                     // Ignore other cases for now
