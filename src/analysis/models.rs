@@ -1150,7 +1150,7 @@ impl Model for SignatureModel {
 
         let Some(ret_var) = &self.returns else {
             // TODO: we need to be able to use our analysis inferred return shape here
-            return Err(anyhow!(ShapeError::UninferrableCall {}));
+            return Ok(Variable::Top);
         };
 
         let ret_var = ret_var
