@@ -1,17 +1,15 @@
-from typing import Generic
+from jaxtyping import Float
 import torch
-
-
-class T(Generic(str)): ...
+from torch import Tensor
 
 
 def relative_attention_cross(
-    x_q: T["batch seq_q d_model"],
-    x_kv: T["batch seq_k d_model"],
-    W_q: T["d_model heads d_k"],
-    W_k: T["d_model heads d_k"],
-    W_v: T["d_model heads d_v"],
-    rel_pos_bias: T["seq_k seq_q"],
+    x_q: Float[Tensor, "batch seq_q d_model"],
+    x_kv: Float[Tensor, "batch seq_k d_model"],
+    W_q: Float[Tensor, "d_model heads d_k"],
+    W_k: Float[Tensor, "d_model heads d_k"],
+    W_v: Float[Tensor, "d_model heads d_v"],
+    rel_pos_bias: Float[Tensor, "seq_k seq_q"],
 ):
     # Extract dimensions
     batch = x_q.shape[0]

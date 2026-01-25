@@ -5,7 +5,7 @@ from model import LinearModel
 from typing import Tuple
 
 def train_model(
-    in_features: int["784"], out_features: int[""], batch_size: int["32"]
+    in_features: int, out_features: int, batch_size: int
 ) -> Float[Tensor, "32"]:
     """Initialize and train a model."""
     # Initialize model
@@ -24,7 +24,7 @@ def train_model(
 
 
 # def evaluate_model(
-#     model: LinearModel, batch_size: int["32"], in_features: int["784"]
+#     model: LinearModel, batch_size: int, in_features: int
 # ) -> Float[Tensor, "batch out"]:
 #     """Evaluate a model."""
 #     x = torch.randn(batch_size, in_features)

@@ -203,7 +203,7 @@ pub fn function_with_inferred_shapes_to_string(
     let mut output = String::new();
 
     write!(output, "def {}(", resolve(ir.identifier)).unwrap();
-    for (i, param) in ir.params.iter().enumerate() {
+    for (i, param) in ir.param_types.iter().enumerate() {
         if i > 0 {
             output.push_str(", ");
         }
@@ -211,10 +211,15 @@ pub fn function_with_inferred_shapes_to_string(
     }
     output.push_str(")");
 
-    if let Some(returns) = &ir.returns {
+    if let Some(ret_var) = &ir.return_type {
         output.push_str(" -> ");
-        output.push_str(&returns.iter().join(", "));
-        output.push_str("");
+        // Handle tuple returns by printing elements comma-separated
+        match ret_var {
+            Variable::Collection(Collection::Tuple(vars)) => {
+                output.push_str(&vars.iter().join(", "));
+            }
+            _ => output.push_str(&format!("{}", ret_var)),
+        }
     }
     output.push_str(":\n");
 
@@ -237,6 +242,7 @@ pub fn function_with_inferred_shapes_to_string(
             }
 
             let Some(domain) = func_facts.state.get(&loc) else {
+                log::debug!("No analysis domain found for location {}", loc);
                 continue;
             };
 

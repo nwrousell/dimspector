@@ -1,11 +1,9 @@
-from typing import Generic
+from jaxtyping import Float
 import torch
+from torch import Tensor
 
 
-class T(Generic(str)): ...
-
-
-def pool_project_wrong(x: T["batch seq d"], proj: T["seq out"]):
+def pool_project_wrong(x: Float[Tensor, "batch seq d"], proj: Float[Tensor, "seq out"]):
     pooled = torch.mean(x, dim=1)
     out = pooled @ proj
     return out

@@ -1,8 +1,5 @@
 use core::panic;
-use std::{
-    collections::{BTreeMap, HashMap},
-    sync::LazyLock,
-};
+use std::{collections::HashMap, sync::LazyLock};
 
 use anyhow::{Result, anyhow};
 use itertools::EitherOrBoth::{self, Both, Left, Right};
@@ -11,7 +8,7 @@ use miette::SourceSpan;
 
 use crate::analysis::errors::ShapeError;
 use crate::analysis::types::Collection;
-use crate::analysis::{ClassAnalysis, DimKind, DimVar, Shape, Variable};
+use crate::analysis::{DimKind, DimVar, Shape, Variable};
 use crate::ir::{Function, Identifier, Parameter, intern, resolve};
 
 /// Holds spans for positional and keyword arguments
@@ -53,16 +50,6 @@ macro_rules! get_args {
             Ok::<_, anyhow::Error>(($( $param ),+))
         }
     };
-}
-
-fn constraint_equal(dim1: &DimVar, dim2: &DimVar, span: SourceSpan) -> Result<()> {
-    if dim1 != dim2 {
-        let err = ShapeError::mismatched(dim1, dim2, span);
-
-        Err(anyhow!(err))
-    } else {
-        Ok(())
-    }
 }
 
 #[derive(Debug)]
@@ -931,18 +918,18 @@ impl Model for TransposeModel {
 #[derive(Debug, Clone)]
 pub struct SignatureModel {
     pub name: String,
-    pub params: Vec<Parameter>,
+    pub param_types: Vec<Parameter>,
     // TODO: in the future with the possibility of mutations,
     // doesn't necc need to have return annotation
-    pub returns: Option<Vec<Variable>>,
+    pub return_type: Option<Variable>,
 }
 
 impl SignatureModel {
     pub fn new(func: &Function) -> Self {
         SignatureModel {
             name: resolve(func.identifier),
-            params: func.params.clone(),
-            returns: func.returns.clone(),
+            param_types: func.param_types.clone(),
+            return_type: func.return_type.clone(),
         }
     }
 }
@@ -971,7 +958,7 @@ impl Model for SignatureModel {
         }
         let mut deferred_constraints: Vec<DeferredConstraint> = Vec::new();
 
-        for (arg_idx, argv) in args.iter().zip_longest(self.params.iter()).enumerate() {
+        for (arg_idx, argv) in args.iter().zip_longest(self.param_types.iter()).enumerate() {
             let (arg_v, param, arg_span) = match argv {
                 EitherOrBoth::Both(arg_v, param) => {
                     let Some(param_v) = &param.1 else {
@@ -1148,14 +1135,10 @@ impl Model for SignatureModel {
             }
         }
 
-        let Some(ret_var) = &self.returns else {
+        let Some(ret_var) = &self.return_type else {
             // TODO: we need to be able to use our analysis inferred return shape here
             return Ok(Variable::Top);
         };
-
-        let ret_var = ret_var
-            .first()
-            .ok_or_else(|| anyhow!(ShapeError::UninferrableCall {}))?;
 
         let substituted_ret = ret_var.substitute(&substitution_map)?;
 

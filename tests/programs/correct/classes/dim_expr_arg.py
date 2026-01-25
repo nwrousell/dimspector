@@ -4,14 +4,14 @@ from torch import Tensor
 
 
 class AdaptiveLayer:
-    def __init__(self, total_dim: int["total"]):
+    def __init__(self, total_dim: int):
         self.total_dim = total_dim
-        self.hidden_dim = total_dim // 2
-        self.output_dim = total_dim - self.hidden_dim
+        self.hidden_dim = total_dim - 10
+        self.output_dim = total_dim
         self.weight = torch.randn(self.hidden_dim, self.output_dim)
 
-    def forward(self, x: Float[Tensor, "b total"]) -> Float[Tensor, "b output_dim"]:
-        hidden = x[..., : self.hidden_dim]
+    def forward(self, x: Float[Tensor, "b total"]) -> Float[Tensor, "b total_dim"]:
+        hidden = x[:, : self.hidden_dim]
         return hidden @ self.weight
 
 

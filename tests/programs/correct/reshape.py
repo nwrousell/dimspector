@@ -1,10 +1,8 @@
-from typing import Generic
+from jaxtyping import Float
 import torch
+from torch import Tensor
 
-
-class T(Generic(str)): ...
-
-def flatten(x: T["b h w"]):
+def flatten(x: Float[Tensor, "b h w"]):
     b = x.shape[0]
     x = torch.reshape(x, (b, -1))
     return x

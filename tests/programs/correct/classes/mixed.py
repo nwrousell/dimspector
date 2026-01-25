@@ -7,8 +7,8 @@ class ComplexLayer:
     def __init__(
         self,
         input_tensor: Float[Tensor, "c h w"],
-        scale: int["scale"],
-        bias: int["bias"],
+        scale: int,
+        bias: int,
     ):
         self.input_shape = input_tensor
         self.scale = scale

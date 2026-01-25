@@ -1,10 +1,8 @@
-from typing import Generic
+from jaxtyping import Float
 import torch
+from torch import Tensor
 
-
-class T(Generic(str)): ...
-
-def token_targets(tokens: T["b t"]):
+def token_targets(tokens: Float[Tensor, "b t"]):
     inps = tokens[:1, :-1]
     targets = tokens[:,1:]
     z = inps + targets

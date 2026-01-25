@@ -6,8 +6,8 @@ from torch import Tensor
 class MultiHeadAttention:
     def __init__(
         self,
-        dims: tuple[int["d_model"], int["d_k"], int["d_v"]],
-        num_heads: int["n_heads"],
+        dims: tuple[int, int, int],
+        num_heads: int,
     ):
         self.d_model, self.d_k, self.d_v = dims
         self.num_heads = num_heads

@@ -91,13 +91,15 @@ impl GlobalAnalysis {
         &mut self,
         project: &Project,
         errors: &mut Vec<(std::path::PathBuf, ShapeError)>,
-    ) {
+    ) -> Result<()> {
         // Analyze all classes
         let all_classes: Vec<&Class> = project.files.iter().flat_map(|f| &f.classes).collect();
         for class in all_classes {
             if let Err(e) = self.analyze_class(class) {
                 if let Some(shape_error) = e.downcast_ref::<ShapeError>() {
                     errors.push((class.file_path.clone(), shape_error.clone()));
+                } else {
+                    return Err(e);
                 }
             }
         }
@@ -109,9 +111,13 @@ impl GlobalAnalysis {
             if let Err(e) = self.analyze_func(func) {
                 if let Some(shape_error) = e.downcast_ref::<ShapeError>() {
                     errors.push((func.file_path.clone(), shape_error.clone()));
+                } else {
+                    return Err(e);
                 }
             }
         }
+        
+        Ok(())
     }
 
     /// Format the entire analysis result as a string, including both classes and functions.

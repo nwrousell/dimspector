@@ -6,7 +6,7 @@ from layers import init_weight_matrix, init_bias_vector
 
 
 class LinearLayer(nn.Module):
-    def __init__(self, in_features: int["in"], out_features: int["out"]):
+    def __init__(self, in_features: int, out_features: int):
         super().__init__()
         self.weight = init_weight_matrix(in_features, out_features)
         self.bias = init_bias_vector(out_features)
@@ -19,9 +19,9 @@ class LinearLayer(nn.Module):
 class MLP(nn.Module):
     def __init__(
         self,
-        input_size: int["784"],
-        hidden_size: int["hidden"],
-        num_classes: int["classes"],
+        input_size: int,
+        hidden_size: int,
+        num_classes: int,
     ):
         super().__init__()
         self.layer1 = LinearLayer(input_size, hidden_size)

@@ -4,7 +4,7 @@ from torch import Tensor
 
 
 class ConvLayer:
-    def __init__(self, input_shape: Float[Tensor, "c h w"], out_channels: int["out_c"]):
+    def __init__(self, input_shape: Float[Tensor, "c h w"], out_channels: int):
         self.input_shape = input_shape
         self.out_channels = out_channels
         c, h, w = input_shape.shape

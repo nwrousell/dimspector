@@ -1,5 +1,6 @@
 use core::fmt;
 
+use crate::analysis::{Collection, Variable};
 use crate::ir::types::{Constant, DimRange, Location, Slice, resolve};
 use crate::utils::{indent, write_comma_separated};
 
@@ -32,11 +33,17 @@ impl fmt::Display for File {
 impl fmt::Display for Function {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "def {}(", resolve(self.identifier))?;
-        write_comma_separated(f, &self.params)?;
+        write_comma_separated(f, &self.param_types)?;
         write!(f, ")")?;
-        if let Some(returns) = &self.returns {
+        if let Some(ret_var) = &self.return_type {
             write!(f, " -> ")?;
-            write_comma_separated(f, returns)?;
+            // Handle tuple returns by printing elements comma-separated
+            match ret_var {
+                Variable::Collection(Collection::Tuple(vars)) => {
+                    write_comma_separated(f, vars)?;
+                }
+                _ => write!(f, "{}", ret_var)?,
+            }
         }
 
         write!(f, ":\n")?;
@@ -230,7 +237,7 @@ impl fmt::Display for Terminator {
         match self {
             Terminator::Return(expr) => match expr {
                 Some(expr) => write!(f, "return {}", expr),
-                None => write!(f, "return"),
+                None => write!(f, "return None"),
             },
             Terminator::Jump(dst) => {
                 write!(f, "jump bb{}", dst.index())

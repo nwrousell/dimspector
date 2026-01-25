@@ -6,9 +6,9 @@ from torch import Tensor
 class ScaledLayer:
     def __init__(
         self,
-        base_dim: int["base"],
-        scale: int["scale"],
-        scaled_dim: int["base * scale"],
+        base_dim: int,
+        scale: int,
+        scaled_dim: int,
     ):
         self.base_dim = base_dim
         self.scale = scale

@@ -1,10 +1,8 @@
-from typing import Generic
+from jaxtyping import Float
 import torch
+from torch import Tensor
 
 
-class T(Generic(str)): ...
-
-
-def add_wrong_batch(x: T["batch seq d"], bias: T["other_batch d"]):
+def add_wrong_batch(x: Float[Tensor, "batch seq d"], bias: Float[Tensor, "other_batch d"]):
     out = x + bias
     return out

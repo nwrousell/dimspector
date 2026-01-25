@@ -1,10 +1,8 @@
-from typing import Generic
+from jaxtyping import Float
 import torch
+from torch import Tensor
 
 
-class T(Generic(str)): ...
-
-
-def scale_wrong_channels(x: T["batch channels h w"], scale: T["other_channels"]):
+def scale_wrong_channels(x: Float[Tensor, "batch channels h w"], scale: Float[Tensor, "other_channels"]):
     out = x * scale
     return out

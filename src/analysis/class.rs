@@ -152,11 +152,11 @@ impl ClassAnalysis {
 
         // Match positional arguments to parameters (skip instance parameter)
         for (i, Parameter(param_name, param_annotation)) in
-            init_analysis.function.params.iter().skip(1).enumerate()
+            init_analysis.function.param_types.iter().skip(1).enumerate()
         {
             let arg_value = if i < args.len() {
                 Some(&args[i])
-            } else if let Some(kwarg_value) = kwargs.get(param_name) {
+            } else if let Some(kwarg_value) = kwargs.get(&param_name) {
                 Some(kwarg_value)
             } else {
                 None // Parameter not provided
@@ -175,7 +175,7 @@ impl ClassAnalysis {
             // Check if this kwarg matches a parameter name (excluding the first parameter)
             if let Some((param_idx, param)) = init_analysis
                 .function
-                .params
+                .param_types
                 .iter()
                 .enumerate()
                 .find(|(idx, p)| idx > &0 && &p.0 == kwarg_name)
@@ -304,7 +304,7 @@ impl ClassAnalysis {
 
         // Apply substitutions to parameters and return type
         let substituted_params: Vec<Parameter> = method
-            .params
+            .param_types
             .iter()
             .skip(1) // skip instance param
             .map(|Parameter(name, var_opt)| {
@@ -315,20 +315,19 @@ impl ClassAnalysis {
             })
             .collect();
 
-        let substituted_returns = method_analysis.function.returns.as_ref().map(|returns| {
-            returns
-                .iter()
-                .map(|v| Self::substitute_variable(v, &instance.substitutions))
-                .collect()
-        });
+        let substituted_return = method_analysis
+            .function
+            .return_type
+            .as_ref()
+            .map(|ret_var| Self::substitute_variable(ret_var, &instance.substitutions));
 
         // Build method name as "ClassName.method_name"
         let full_method_name = format!("{}.{}", resolve(self.id), resolve(method_name));
 
         Ok(SignatureModel {
             name: full_method_name,
-            params: substituted_params,
-            returns: substituted_returns,
+            param_types: substituted_params,
+            return_type: substituted_return,
         })
     }
 

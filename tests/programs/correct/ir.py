@@ -1,8 +1,6 @@
-from typing import Generic
+from jaxtyping import Float
 import torch
-
-
-class T(Generic(str)): ...
+from torch import Tensor
 
 
 def empty():
@@ -17,7 +15,7 @@ def single_return():
     return 1 + 2
 
 
-def params(a: T["a b"], b: T["b c"]):
+def params(a: Float[Tensor, "a b"], b: Float[Tensor, "b c"]):
     return a @ b
 
 

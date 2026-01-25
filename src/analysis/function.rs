@@ -37,7 +37,7 @@ impl FunctionAnalysis {
         let mut start_domain = AnalysisDomain::new();
 
         // populate with params
-        for Parameter(ident, var) in &func.params {
+        for Parameter(ident, var) in &func.param_types {
             if let Some(var) = var {
                 start_domain.insert(ident.clone(), HashSet::from([var.clone()]));
             }

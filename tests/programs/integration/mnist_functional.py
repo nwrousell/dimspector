@@ -1,38 +1,36 @@
-from typing import Generic
+from jaxtyping import Float
 import torch
+from torch import Tensor
 
 
-class T(Generic(str)): ...
-
-
-def init_weight_matrix(in_features: int["in"], out_features: int["out"]) -> T["out in"]:
+def init_weight_matrix(in_features: int, out_features: int) -> Float[Tensor, "out in"]:
     """Initialize a weight matrix with Kaiming initialization."""
     weight = torch.randn(out_features, in_features) * (2.0 / in_features) ** 0.5
     weight.requires_grad_(True)
     return weight
 
 
-def init_bias_vector(out_features: int["out"]) -> T["out"]:
+def init_bias_vector(out_features: int) -> Float[Tensor, "out"]:
     """Initialize a bias vector with zeros."""
     bias = torch.zeros(out_features)
     bias.requires_grad_(True)
     return bias
 
 
-def linear(x: T["batch in"], weight: T["out in"], bias: T["out"]) -> T["batch out"]:
+def linear(x: Float[Tensor, "batch in"], weight: Float[Tensor, "out in"], bias: Float[Tensor, "out"]) -> Float[Tensor, "batch out"]:
     """Apply a linear transformation: x @ weight.T + bias."""
     return x @ torch.transpose(weight) + bias
 
 
 def forward(
-    x: T["batch 1 28 28"],
-    w1: T["hidden 784"],
-    b1: T["hidden"],
-    w2: T["hidden hidden"],
-    b2: T["hidden"],
-    w3: T["classes hidden"],
-    b3: T["classes"],
-) -> T["batch classes"]:
+    x: Float[Tensor, "batch 1 28 28"],
+    w1: Float[Tensor, "hidden 784"],
+    b1: Float[Tensor, "hidden"],
+    w2: Float[Tensor, "hidden hidden"],
+    b2: Float[Tensor, "hidden"],
+    w3: Float[Tensor, "classes hidden"],
+    b3: Float[Tensor, "classes"],
+) -> Float[Tensor, "batch classes"]:
     """Forward pass through the MLP."""
     x = torch.view(x, (x.shape[0], -1))
     x = torch.nn.functional.relu(linear(x, w1, b1))

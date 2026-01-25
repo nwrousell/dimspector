@@ -48,7 +48,7 @@ impl Dimspector {
 
         // Analyze everything and collect errors
         let mut errors = Vec::new();
-        global_analysis.analyze_project(&project_ir, &mut errors);
+        global_analysis.analyze_project(&project_ir, &mut errors)?;
 
         Ok((
             Self {
@@ -88,7 +88,7 @@ impl Dimspector {
 
         // Analyze everything and collect errors
         let mut errors = Vec::new();
-        global_analysis.analyze_project(&project_ir, &mut errors);
+        global_analysis.analyze_project(&project_ir, &mut errors)?;
 
         Ok((
             Self {

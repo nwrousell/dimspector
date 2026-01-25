@@ -8,15 +8,16 @@ use petgraph::{
 };
 
 use ruff_python_ast::{
-    Expr as ASTExpr, ExprAttribute, ExprBinOp, ExprCall, ExprCompare, ExprDict,
-    ExprEllipsisLiteral, ExprFString, ExprList, ExprName, ExprNumberLiteral, ExprSlice,
-    ExprStringLiteral, ExprSubscript, ExprTuple, ExprUnaryOp, Keyword, Number, Stmt as ASTStmt,
-    StmtAssign, StmtAugAssign, StmtClassDef, StmtExpr, StmtFor, StmtFunctionDef, StmtGlobal,
-    StmtIf, StmtReturn, StmtWhile, StmtWith, UnaryOp,
+    Expr as ASTExpr, ExprAttribute, ExprBinOp, ExprCall, ExprCompare, ExprDict, ExprFString,
+    ExprList, ExprName, ExprNumberLiteral, ExprSlice, ExprStringLiteral, ExprSubscript, ExprTuple,
+    ExprUnaryOp, Keyword, Number, Stmt as ASTStmt, StmtAssign, StmtAugAssign, StmtClassDef,
+    StmtExpr, StmtFor, StmtFunctionDef, StmtGlobal, StmtIf, StmtReturn, StmtWhile, StmtWith,
+    UnaryOp,
 };
 use ruff_text_size::TextRange;
 use std::path::PathBuf;
 
+use crate::parse::SymbolTable;
 use crate::{
     analysis::{Collection, Shape, Variable},
     ir::types::{BasicBlock, BasicBlockIdx, Cfg, Expr, PartialCfg, Statement, Terminator},
@@ -25,7 +26,6 @@ use crate::{
     analysis::{DimKind, DimVar},
     ir::types::{Binop, Class, Constant, ExprKind, Function, Identifier, Slice, Type, intern},
 };
-use crate::{ir::resolve, parse::SymbolTable};
 
 pub fn lower_class(
     class_def: &StmtClassDef,
@@ -128,14 +128,14 @@ pub fn lower_func(
         intern(func.name.as_str()),
         file_path.clone(),
         cfg,
-        lowerer.params,
-        lowerer.returns,
+        lowerer.param_types,
+        lowerer.return_type,
     ))
 }
 
 struct LowerBody {
-    pub params: Vec<(crate::ir::Identifier, Option<Variable>)>,
-    pub returns: Option<Vec<Variable>>,
+    pub param_types: Vec<(Identifier, Option<Variable>)>,
+    pub return_type: Option<Variable>,
     pub graph: PartialCfg, // might need to turn this into DiGraph<Option<BasicBlock>, ()>
     pub cur_block: Vec<Statement>,
     pub cur_loc: Option<BasicBlockIdx>,
@@ -160,46 +160,21 @@ impl LowerBody {
         let mut params = Vec::new();
 
         // populate params
-        for (i, param) in func.parameters.args.iter().enumerate() {
+        for param in func.parameters.args.iter() {
             let identifier = &param.parameter.name;
-
-            // TODO: have new Variable type so that not every non-tensor-annotated param is a DimVar
-            let mut ty = Variable::DimVar(DimVar::new(crate::analysis::DimKind::Named(format!(
-                "s{}",
-                i
-            ))));
-
-            if let Some(annotation) = &param.parameter.annotation {
-                // Try to extract shape string from annotation (supports both T["shape"] and Float[Tensor, "shape"])
-                if let Some(shape_str) = LowerBody::extract_shape_string(annotation) {
-                    ty = Variable::Tensor(Shape::from_str(&shape_str));
-                } else if let ASTExpr::Subscript(subscript) = annotation.as_ref() {
-                    // Handle int["dvar"] format
-                    if let ASTExpr::Name(name) = subscript.value.as_ref() {
-                        if name.id.as_str() == "int" {
-                            if let ASTExpr::StringLiteral(dvar_str) = subscript.slice.as_ref() {
-                                let dvar = dvar_str.value.to_str();
-                                // Use parse_dimvar to correctly handle both numeric (Concrete) and named dimensions
-                                ty =
-                                    Variable::DimVar(DimVar::new(DimKind::Named(dvar.to_string())));
-                            }
-                        }
-                    }
-                }
-            }
-
-            params.push((intern(identifier.as_str()), Some(ty)));
+            let ty = LowerBody::parse_parameter_annotation(param);
+            params.push((intern(identifier.as_str()), ty));
         }
 
-        // Handle return type annotations (supports single returns and tuple returns)
-        let mut returns = None;
-        if let Some(ret_ty) = &func.returns {
-            returns = Some(vec![LowerBody::extract_variable_from_annotation(ret_ty)]);
-        }
+        // Handle return type annotations
+        let return_var = func
+            .returns
+            .as_ref()
+            .and_then(|ret_ty| LowerBody::parse_annotation(ret_ty));
 
         LowerBody {
-            params,
-            returns,
+            param_types: params,
+            return_type: return_var,
             graph,
             cur_block: Vec::new(),
             cur_loc: Some(start_block),
@@ -230,59 +205,10 @@ impl LowerBody {
         tower_lsp::lsp_types::Position::new(line, character)
     }
 
-    /// Extract a Variable from a type annotation.
-    /// Supports single types (shapes, dimvars) and tuple types.
-    fn extract_variable_from_annotation(annotation: &ASTExpr) -> Variable {
-        // Check if it's a Tuple[...] or tuple[...] annotation
-        if let ASTExpr::Subscript(subscript) = annotation {
-            if let ASTExpr::Name(name) = subscript.value.as_ref() {
-                if name.id.as_str() == "tuple" || name.id.as_str() == "Tuple" {
-                    // Handle Tuple[...] or tuple[...] format
-                    if let ASTExpr::Tuple(tuple) = subscript.slice.as_ref() {
-                        let elements: Vec<Variable> = tuple
-                            .elts
-                            .iter()
-                            .map(|elt| LowerBody::extract_variable_from_annotation(elt))
-                            .collect();
-                        return Variable::Collection(Collection::Tuple(elements));
-                    }
-                }
-            }
-        }
-
-        // Try to extract shape string
-        if let Some(shape_str) = LowerBody::extract_shape_string(annotation) {
-            return Variable::Tensor(Shape::from_str(&shape_str));
-        }
-
-        // Try to extract dimvar (int["dvar"] format)
-        if let ASTExpr::Subscript(subscript) = annotation {
-            if let ASTExpr::Name(name) = subscript.value.as_ref() {
-                if name.id.as_str() == "int" {
-                    if let ASTExpr::StringLiteral(dvar_str) = subscript.slice.as_ref() {
-                        let dvar = dvar_str.value.to_str();
-                        return Variable::DimVar(DimVar::new(DimKind::Named(dvar.to_string())));
-                    }
-                }
-            }
-        }
-
-        // Default to Top if we can't extract anything
-        Variable::Top
-    }
-
     /// Extract shape string from type annotation.
-    /// Supports both T["shape"] and Float[Tensor, "shape"] formats.
+    /// Supports jaxtyping format: Float[Tensor, "shape"]
     fn extract_shape_string(annotation: &ASTExpr) -> Option<String> {
         if let ASTExpr::Subscript(subscript) = annotation {
-            // Handle T["shape"] format
-            if let ASTExpr::Name(name) = subscript.value.as_ref() {
-                if name.id.as_str() == "T" {
-                    if let ASTExpr::StringLiteral(shape_str) = subscript.slice.as_ref() {
-                        return Some(shape_str.value.to_str().to_string());
-                    }
-                }
-            }
             // Handle Float[Tensor, "shape"] or other jaxtyping formats
             if let ASTExpr::Name(name) = subscript.value.as_ref() {
                 // Check for jaxtyping types: Float, Int, Bool, etc.
@@ -307,6 +233,80 @@ impl LowerBody {
             }
         }
         None
+    }
+
+    /// Parse a type annotation into a Variable.
+    /// Returns None if annotation cannot be parsed.
+    /// Handles jaxtyping format (Float[Tensor, "shape"]) and tuple types
+    fn parse_annotation(annotation: &ASTExpr) -> Option<Variable> {
+        // Check if it's a Tuple[...] or tuple[...] annotation
+        if let ASTExpr::Subscript(subscript) = annotation {
+            if let ASTExpr::Name(name) = subscript.value.as_ref() {
+                if name.id.as_str() == "tuple" || name.id.as_str() == "Tuple" {
+                    // Handle Tuple[...] or tuple[...] format
+                    if let ASTExpr::Tuple(tuple) = subscript.slice.as_ref() {
+                        let elements: Vec<Variable> = tuple
+                            .elts
+                            .iter()
+                            .filter_map(|elt| LowerBody::parse_annotation(elt))
+                            .collect();
+
+                        if !elements.is_empty() {
+                            return Some(Variable::Collection(Collection::Tuple(elements)));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Try to extract shape string from jaxtyping format
+        if let Some(shape_str) = LowerBody::extract_shape_string(annotation) {
+            return Some(Variable::Tensor(Shape::from_str(&shape_str)));
+        }
+
+        // Check if it's a plain int annotation
+        if let ASTExpr::Name(name) = annotation {
+            if name.id.as_str() == "int" {
+                // Return None so parse_parameter_annotation can handle it with param name
+                return None;
+            }
+        }
+
+        None
+    }
+
+    /// Parse a parameter annotation.
+    /// If annotation is plain int, creates a symbolic DimVar with the parameter name.
+    /// If no annotation, returns None (no Variable type).
+    /// Otherwise calls parse_annotation.
+    fn parse_parameter_annotation(
+        param: &ruff_python_ast::ParameterWithDefault,
+    ) -> Option<Variable> {
+        let param_name = param.parameter.name.as_str();
+
+        match &param.parameter.annotation {
+            Some(annotation) => {
+                // Try parsing the annotation
+                let parsed = LowerBody::parse_annotation(annotation);
+
+                // If annotation is plain int or couldn't be parsed, create symbolic DimVar
+                if parsed.is_none() {
+                    if let ASTExpr::Name(name) = annotation.as_ref() {
+                        if name.id.as_str() == "int" {
+                            return Some(Variable::DimVar(DimVar::new(DimKind::Named(
+                                param_name.to_string(),
+                            ))));
+                        }
+                    }
+                }
+
+                parsed
+            }
+            None => {
+                // No annotation
+                None
+            }
+        }
     }
 
     /// Infer callable type by heuristic: if it's in the list of class names, it's a constructor.

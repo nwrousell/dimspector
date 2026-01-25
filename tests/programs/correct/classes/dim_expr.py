@@ -4,7 +4,7 @@ from torch import Tensor
 
 
 class PaddedLayer:
-    def __init__(self, in_dim: int["in_dim"], padding: int["pad"]):
+    def __init__(self, in_dim: int, padding: int):
         self.in_dim = in_dim
         self.padding = padding
 

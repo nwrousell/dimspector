@@ -1,11 +1,9 @@
-from typing import Generic
+from jaxtyping import Float
 import torch
+from torch import Tensor
 
 
-class T(Generic(str)): ...
-
-
-def mlp_wrong_hidden(x: T["batch d"], w1: T["d hidden"], w2: T["other d"]):
+def mlp_wrong_hidden(x: Float[Tensor, "batch d"], w1: Float[Tensor, "d hidden"], w2: Float[Tensor, "other d"]):
     h = x @ w1
     out = h @ w2
     return out

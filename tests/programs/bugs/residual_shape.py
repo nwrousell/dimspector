@@ -1,11 +1,9 @@
-from typing import Generic
+from jaxtyping import Float
 import torch
+from torch import Tensor
 
 
-class T(Generic(str)): ...
-
-
-def residual_dim_mismatch(x: T["batch d"], weight: T["d d_out"]):
+def residual_dim_mismatch(x: Float[Tensor, "batch d"], weight: Float[Tensor, "d d_out"]):
     transformed = x @ weight
     out = x + transformed
     return out

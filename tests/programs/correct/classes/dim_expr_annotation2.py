@@ -6,11 +6,11 @@ from torch import Tensor
 class PaddedConvLayer:
     def __init__(
         self,
-        in_dim: int["in_dim"],
-        padding: int["pad"],
-        padded_dim: int["in_dim + 2 * pad"],
-        kernel_size: int["kernel"],
-        out_dim: int["padded_dim - kernel + 1"],
+        in_dim: int,
+        padding: int,
+        padded_dim: int,
+        kernel_size: int,
+        out_dim: int,
     ):
         self.in_dim = in_dim
         self.padding = padding

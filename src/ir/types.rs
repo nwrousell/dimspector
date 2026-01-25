@@ -92,8 +92,8 @@ pub struct Function {
     pub identifier: Identifier,
     pub file_path: std::path::PathBuf,
     pub cfg: Cfg,
-    pub params: Vec<Parameter>,
-    pub returns: Option<Vec<Variable>>,
+    pub param_types: Vec<Parameter>,
+    pub return_type: Option<Variable>,
     pub locations: Vec<Location>,
     pub rpo: Vec<BasicBlockIdx>,
 }
@@ -112,15 +112,15 @@ impl Function {
         identifier: Identifier,
         file_path: std::path::PathBuf,
         cfg: Cfg,
-        params: Vec<(Identifier, Option<Variable>)>,
-        returns: Option<Vec<Variable>>,
+        param_types: Vec<(Identifier, Option<Variable>)>,
+        return_type: Option<Variable>,
     ) -> Function {
         let rpo: Vec<BasicBlockIdx> = utils::reverse_post_order(&cfg, 0.into())
             .into_iter()
             .map(BasicBlockIdx::from)
             .collect();
 
-        let params = params
+        let param_types = param_types
             .into_iter()
             .map(|(p, a)| Parameter::new(p, a))
             .collect();
@@ -140,8 +140,8 @@ impl Function {
             cfg,
             locations,
             rpo,
-            params,
-            returns,
+            param_types,
+            return_type,
         }
     }
 
