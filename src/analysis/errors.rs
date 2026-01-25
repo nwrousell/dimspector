@@ -104,6 +104,36 @@ pub enum ShapeError {
         #[label("mismatch occurs here")]
         span: SourceSpan,
     },
+
+    /// Missing required argument for function call
+    #[error("missing required argument `{param_name}`")]
+    #[diagnostic(code(shape::missing_argument))]
+    MissingArgument {
+        func_name: String,
+        param_name: String,
+        #[label("argument `{param_name}` is required but not provided")]
+        span: SourceSpan,
+    },
+
+    /// Matmul with scalar tensors (rank 0)
+    #[error("matmul cannot be used with scalar tensors (rank 0)")]
+    #[diagnostic(code(shape::matmul_with_scalar))]
+    MatmulWithScalar {
+        left_shape: Shape,
+        right_shape: Shape,
+        #[label("matmul with shapes {left_shape} @ {right_shape} is not allowed")]
+        span: SourceSpan,
+    },
+
+    /// Dimension variable used in signature but not defined by parameters
+    #[error("dimension `{dimvar_name}` is not defined by any parameter")]
+    #[diagnostic(code(shape::undefined_dimvar))]
+    UndefinedDimVar {
+        dimvar_name: String,
+        func_name: String,
+        #[label("dimension `{dimvar_name}` must appear in a function parameter to be used here")]
+        span: SourceSpan,
+    },
 }
 
 impl ShapeError {
@@ -192,12 +222,6 @@ impl ShapeError {
 
         // Get range and related_information from span if available
         let (range, related_information) = match self {
-            ShapeError::MismatchedDims { span, .. } => {
-                (Self::span_to_range(span, file_content), None)
-            }
-            ShapeError::SignatureParamMismatch { span, .. } => {
-                (Self::span_to_range(span, file_content), None)
-            }
             ShapeError::InconsistentDimVars {
                 first_span,
                 second_span,
@@ -247,14 +271,18 @@ impl ShapeError {
                 ];
                 (range, Some(related))
             }
-            ShapeError::MatmulMismatch { span, .. } => {
+            // Most errors just need span converted to range with no related information
+            ShapeError::MismatchedDims { span, .. }
+            | ShapeError::SignatureParamMismatch { span, .. }
+            | ShapeError::MatmulMismatch { span, .. }
+            | ShapeError::BroadcastMismatch { span, .. }
+            | ShapeError::BadReshape { span, .. }
+            | ShapeError::UnequalRank { span, .. }
+            | ShapeError::MissingArgument { span, .. }
+            | ShapeError::MatmulWithScalar { span, .. }
+            | ShapeError::UndefinedDimVar { span, .. } => {
                 (Self::span_to_range(span, file_content), None)
             }
-            ShapeError::BroadcastMismatch { span, .. } => {
-                (Self::span_to_range(span, file_content), None)
-            }
-            ShapeError::BadReshape { span, .. } => (Self::span_to_range(span, file_content), None),
-            ShapeError::UnequalRank { span, .. } => (Self::span_to_range(span, file_content), None),
             // For errors without spans, use a default range at the start of the file
             ShapeError::UninferrableCall {} | ShapeError::DimOutRange { .. } => {
                 let default_range = Range {

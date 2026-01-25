@@ -1,4 +1,3 @@
-use core::panic;
 use std::{collections::HashMap, sync::LazyLock};
 
 use anyhow::{Result, anyhow};
@@ -277,7 +276,9 @@ pub fn resolve_args(
     args: Vec<&Variable>,
     kwargs: HashMap<Identifier, &Variable>,
     signature: &Signature,
-) -> HashMap<Identifier, Variable> {
+    func_name: &str,
+    span: SourceSpan,
+) -> Result<HashMap<Identifier, Variable>> {
     let mut mapping = HashMap::new();
     match signature {
         Signature::Variadic { kwargs_defaults } => {
@@ -303,7 +304,11 @@ pub fn resolve_args(
                 } else if let Some(default_arg) = default {
                     default_arg
                 } else {
-                    panic!("arg not found for function");
+                    return Err(anyhow!(ShapeError::MissingArgument {
+                        func_name: func_name.to_string(),
+                        param_name: resolve(*name).to_string(),
+                        span,
+                    }));
                 };
 
                 mapping.insert(*name, arg.clone());
@@ -311,7 +316,7 @@ pub fn resolve_args(
         }
     };
 
-    mapping
+    Ok(mapping)
 }
 
 #[derive(Debug)]
@@ -334,10 +339,10 @@ impl Model for TensorFromSizeModel {
         &self,
         args: Vec<&Variable>,
         kwargs: HashMap<Identifier, &Variable>,
-        _span: SourceSpan,
+        span: SourceSpan,
         _arg_spans: &ArgSpans,
     ) -> Result<Variable> {
-        let args = resolve_args(args, kwargs, &VARIADIC_SIZE_SIGNATURE);
+        let args = resolve_args(args, kwargs, &VARIADIC_SIZE_SIGNATURE, "torch.tensor", span)?;
         let size_tuple = args
             .get(&intern("variadic"))
             .expect("variadic signature always has variadic tuple")
@@ -375,10 +380,10 @@ impl Model for RandIntModel {
         &self,
         args: Vec<&Variable>,
         kwargs: HashMap<Identifier, &Variable>,
-        _span: SourceSpan,
+        span: SourceSpan,
         _arg_spans: &ArgSpans,
     ) -> Result<Variable> {
-        let args = resolve_args(args, kwargs, &RANDINT_SIGNATURE);
+        let args = resolve_args(args, kwargs, &RANDINT_SIGNATURE, "torch.randint", span)?;
         let size = get_args!(args, RandInt,
             size: as_shape_dims => "Tuple",
         )?;
@@ -398,7 +403,7 @@ impl Model for BroadcastModel {
         span: SourceSpan,
         _arg_spans: &ArgSpans,
     ) -> Result<Variable> {
-        let args = resolve_args(args, kwargs, &INPUT_OTHER_SIGNATURE);
+        let args = resolve_args(args, kwargs, &INPUT_OTHER_SIGNATURE, "torch.add", span)?;
         let (l_shape, r_shape) = get_args!(args, Matmul,
             input: as_shape_dims => "Tensor",
             other: as_shape_dims => "Tensor",
@@ -458,7 +463,7 @@ impl Model for MatmulModel {
         _arg_spans: &ArgSpans,
     ) -> Result<Variable> {
         // TODO: also deal with out (mutates)
-        let args = resolve_args(args, kwargs, &INPUT_OTHER_SIGNATURE);
+        let args = resolve_args(args, kwargs, &INPUT_OTHER_SIGNATURE, "torch.matmul", span)?;
         let (input_shape, other_shape) = get_args!(args, Matmul,
             input: as_shape_dims => "Tensor",
             other: as_shape_dims => "Tensor",
@@ -483,7 +488,11 @@ impl Model for MatmulModel {
 
         match (input_shape.len(), other_shape.len()) {
             (0, _) | (_, 0) => {
-                panic!("matmul with a scalar is not allowed!")
+                return Err(anyhow!(ShapeError::MatmulWithScalar {
+                    left_shape: left_shape.clone(),
+                    right_shape: right_shape.clone(),
+                    span,
+                }));
             }
 
             // dot product
@@ -594,10 +603,10 @@ impl Model for PassthroughModel {
         &self,
         args: Vec<&Variable>,
         kwargs: HashMap<Identifier, &Variable>,
-        _span: SourceSpan,
+        span: SourceSpan,
         _arg_spans: &ArgSpans,
     ) -> Result<Variable> {
-        let args = resolve_args(args, kwargs, &SINGLE_TENSOR_INPUT_SIGNATURE);
+        let args = resolve_args(args, kwargs, &SINGLE_TENSOR_INPUT_SIGNATURE, "torch.relu", span)?;
         let input_shape = get_args!(args, Eltwise,
             input: as_shape => "Tensor",
         )?;
@@ -621,10 +630,10 @@ impl Model for RdxModel {
         &self,
         args: Vec<&Variable>,
         kwargs: HashMap<Identifier, &Variable>,
-        _span: SourceSpan,
+        span: SourceSpan,
         _arg_spans: &ArgSpans,
     ) -> Result<Variable> {
-        let args = resolve_args(args, kwargs, &RDX_SIGNATURE);
+        let args = resolve_args(args, kwargs, &RDX_SIGNATURE, "torch.sum", span)?;
         let input_shape = get_args!(args, Matmul,
             input: as_shape_dims => "Tensor",
         )?;
@@ -702,7 +711,7 @@ impl Model for ConcatModel {
         span: SourceSpan,
         _arg_spans: &ArgSpans,
     ) -> Result<Variable> {
-        let args = resolve_args(args, kwargs, &CONCAT_SIGNATURE);
+        let args = resolve_args(args, kwargs, &CONCAT_SIGNATURE, "torch.cat", span)?;
         let (tensors, dim) = get_args!(args, Concat,
             tensors: as_vec => "Tuple",
             dim: as_concrete_dimvar => "Int",
@@ -771,7 +780,7 @@ impl Model for ReshapeModel {
         span: SourceSpan,
         _arg_spans: &ArgSpans,
     ) -> Result<Variable> {
-        let args = resolve_args(args, kwargs, &RESHAPE_SIGNATURE);
+        let args = resolve_args(args, kwargs, &RESHAPE_SIGNATURE, "torch.reshape", span)?;
         let (src_shape, tgt_shape) = get_args!(args, Concat,
             input: as_shape_dims => "Tensor",
             shape: as_shape_dims => "Tuple",
@@ -843,7 +852,7 @@ impl Model for TensorReshapeModel {
         span: SourceSpan,
         arg_spans: &ArgSpans,
     ) -> Result<Variable> {
-        let resolved_args = resolve_args(args, kwargs, &TENSOR_RESHAPE_SIGNATURE);
+        let resolved_args = resolve_args(args, kwargs, &TENSOR_RESHAPE_SIGNATURE, "tensor.reshape", span)?;
         let variadic_tuple = resolved_args
             .get(&intern("variadic"))
             .expect("variadic signature always has variadic tuple")
@@ -885,10 +894,10 @@ impl Model for TransposeModel {
         &self,
         args: Vec<&Variable>,
         kwargs: HashMap<Identifier, &Variable>,
-        _span: SourceSpan,
+        span: SourceSpan,
         _arg_spans: &ArgSpans,
     ) -> Result<Variable> {
-        let args = resolve_args(args, kwargs, &TRANSPOSE_SIGNATURE);
+        let args = resolve_args(args, kwargs, &TRANSPOSE_SIGNATURE, "torch.transpose", span)?;
         let (mut input_dims, dim0, dim1) = get_args!(args, Transpose,
             input: as_shape_dims => "Tensor",
             dim0: as_concrete_dimvar => "Int",
@@ -1109,7 +1118,10 @@ impl Model for SignatureModel {
 
         // Check deferred constraints (expression dimvars like k-1)
         for constraint in deferred_constraints {
-            let expected_dv = constraint.param_dv.substitute(&substitution_map)?;
+            let expected_dv =
+                constraint
+                    .param_dv
+                    .substitute(&substitution_map, &self.name, constraint.arg_span)?;
             if expected_dv != *constraint.arg_dv {
                 // Use SignatureParamMismatch for tensor shapes, MismatchedDims for single dimvars
                 match (constraint.param_shape, constraint.arg_shape) {
@@ -1138,7 +1150,7 @@ impl Model for SignatureModel {
             return Ok(Variable::Top);
         };
 
-        let substituted_ret = ret_var.substitute(&substitution_map)?;
+        let substituted_ret = ret_var.substitute(&substitution_map, &self.name, span)?;
 
         Ok(substituted_ret)
     }

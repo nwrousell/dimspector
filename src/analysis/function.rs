@@ -546,7 +546,8 @@ impl FunctionAnalysis {
                 };
 
                 // Get the substituted signature for this method
-                let signature_model = class_analysis.get_method_signature(method_name, instance)?;
+                let signature_model =
+                    class_analysis.get_method_signature(method_name, instance, span)?;
 
                 // For each combination of args/kwargs, use the signature model
                 for (args_refs, kwargs_ref) in method_args_products

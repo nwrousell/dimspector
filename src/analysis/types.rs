@@ -209,11 +209,16 @@ impl Variable {
     }
 
     /// Apply DimVar substitutions to a Variable, recursively substituting DimVars in shapes and collections.
-    pub fn substitute(&self, substitutions: &HashMap<String, DimVar>) -> Result<Variable> {
+    pub fn substitute(
+        &self,
+        substitutions: &HashMap<String, DimVar>,
+        func_name: &str,
+        span: miette::SourceSpan,
+    ) -> Result<Variable> {
         match self {
             Variable::DimVar(dv) => {
                 // Substitute the DimVar
-                let substituted = dv.substitute(substitutions)?;
+                let substituted = dv.substitute(substitutions, func_name, span)?;
                 Ok(Variable::DimVar(substituted))
             }
             Variable::Tensor(shape) => {
@@ -221,27 +226,32 @@ impl Variable {
                 let substituted_dims: Result<Vec<DimVar>> = shape
                     .0
                     .iter()
-                    .map(|dv| dv.substitute(substitutions))
+                    .map(|dv| dv.substitute(substitutions, func_name, span))
                     .collect();
                 Ok(Variable::Tensor(Shape(substituted_dims?)))
             }
             Variable::Collection(col) => {
                 let sub_col = match col {
                     Collection::Tuple(vars) => {
-                        let substituted_vars: Result<Vec<Variable>> =
-                            vars.iter().map(|v| v.substitute(substitutions)).collect();
+                        let substituted_vars: Result<Vec<Variable>> = vars
+                            .iter()
+                            .map(|v| v.substitute(substitutions, func_name, span))
+                            .collect();
                         Collection::Tuple(substituted_vars?)
                     }
                     Collection::List(vars) => {
-                        let substituted_vars: Result<Vec<Variable>> =
-                            vars.iter().map(|v| v.substitute(substitutions)).collect();
+                        let substituted_vars: Result<Vec<Variable>> = vars
+                            .iter()
+                            .map(|v| v.substitute(substitutions, func_name, span))
+                            .collect();
                         Collection::List(substituted_vars?)
                     }
                     Collection::Dict(map) => {
                         let substituted_map: Result<BTreeMap<_, _>> = map
                             .iter()
                             .map(|(k, v)| {
-                                v.substitute(substitutions).map(|sub_v| (k.clone(), sub_v))
+                                v.substitute(substitutions, func_name, span)
+                                    .map(|sub_v| (k.clone(), sub_v))
                             })
                             .collect();
                         Collection::Dict(substituted_map?)

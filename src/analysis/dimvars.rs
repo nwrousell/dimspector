@@ -380,14 +380,31 @@ impl DimVar {
         }
     }
 
-    pub fn substitute(&self, map: &HashMap<String, DimVar>) -> Result<DimVar> {
+    pub fn substitute(
+        &self,
+        map: &HashMap<String, DimVar>,
+        func_name: &str,
+        span: miette::SourceSpan,
+    ) -> Result<DimVar> {
+        use crate::analysis::errors::ShapeError;
+        
         Ok(match self.kind() {
             DimKind::Named(name) => map
                 .get(&name)
                 .cloned()
-                .ok_or_else(|| anyhow!("can't resolve callee dim var {}", name))?,
-            DimKind::Mul { left, right } => left.substitute(map)? * right.substitute(map)?,
-            DimKind::Add { left, right } => left.substitute(map)? + right.substitute(map)?,
+                .ok_or_else(|| {
+                    anyhow!(ShapeError::UndefinedDimVar {
+                        dimvar_name: name.clone(),
+                        func_name: func_name.to_string(),
+                        span,
+                    })
+                })?,
+            DimKind::Mul { left, right } => {
+                left.substitute(map, func_name, span)? * right.substitute(map, func_name, span)?
+            }
+            DimKind::Add { left, right } => {
+                left.substitute(map, func_name, span)? + right.substitute(map, func_name, span)?
+            }
             DimKind::Concrete(_) => self.clone(),
         })
     }

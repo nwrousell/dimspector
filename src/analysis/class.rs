@@ -308,6 +308,7 @@ impl ClassAnalysis {
         &self,
         method_name: Identifier,
         instance: &ClassInstance,
+        span: miette::SourceSpan,
     ) -> Result<SignatureModel> {
         let method_analysis = self.methods.get(&method_name).ok_or_else(|| {
             anyhow::anyhow!(
@@ -318,15 +319,17 @@ impl ClassAnalysis {
         })?;
         let method = &method_analysis.function;
 
+        let method_name = resolve(method_name);
+
         // Apply substitutions to parameters and return type
         let substituted_params: Vec<Parameter> = method
             .param_types
             .iter()
             .skip(1) // skip instance param
             .map(|Parameter(name, var_opt)| {
-                let substituted_var = var_opt
-                    .as_ref()
-                    .map(|v| Self::substitute_variable(v, &instance.substitutions));
+                let substituted_var = var_opt.as_ref().map(|v| {
+                    Self::substitute_variable(v, &instance.substitutions, &method_name, span)
+                });
                 Parameter(*name, substituted_var)
             })
             .collect();
@@ -335,13 +338,12 @@ impl ClassAnalysis {
             .function
             .return_type
             .as_ref()
-            .map(|ret_var| Self::substitute_variable(ret_var, &instance.substitutions));
-
-        // Build method name as "ClassName.method_name"
-        let full_method_name = format!("{}.{}", resolve(self.id), resolve(method_name));
+            .map(|ret_var| {
+                Self::substitute_variable(ret_var, &instance.substitutions, &method_name, span)
+            });
 
         Ok(SignatureModel {
-            name: full_method_name,
+            name: method_name,
             param_types: substituted_params,
             return_type: substituted_return,
         })
@@ -351,6 +353,8 @@ impl ClassAnalysis {
     pub fn substitute_variable(
         var: &Variable,
         substitutions: &BTreeMap<DimVar, DimVar>,
+        func_name: &str,
+        span: miette::SourceSpan,
     ) -> Variable {
         match var {
             Variable::DimVar(dv) => {
@@ -362,7 +366,7 @@ impl ClassAnalysis {
                         string_map.insert(name, concrete_dv.clone());
                     }
                 }
-                if let Ok(substituted) = dv.substitute(&string_map) {
+                if let Ok(substituted) = dv.substitute(&string_map, func_name, span) {
                     Variable::DimVar(substituted)
                 } else {
                     var.clone()
@@ -380,7 +384,8 @@ impl ClassAnalysis {
                                 string_map.insert(name, concrete_dv.clone());
                             }
                         }
-                        dv.substitute(&string_map).unwrap_or_else(|_| dv.clone())
+                        dv.substitute(&string_map, func_name, span)
+                            .unwrap_or_else(|_| dv.clone())
                     })
                     .collect();
                 Variable::Tensor(Shape(substituted_dims))
@@ -390,21 +395,26 @@ impl ClassAnalysis {
                     Collection::Tuple(vars) => {
                         let substituted_vars: Vec<Variable> = vars
                             .iter()
-                            .map(|v| Self::substitute_variable(v, substitutions))
+                            .map(|v| Self::substitute_variable(v, substitutions, func_name, span))
                             .collect();
                         Collection::Tuple(substituted_vars)
                     }
                     Collection::List(vars) => {
                         let substituted_vars: Vec<Variable> = vars
                             .iter()
-                            .map(|v| Self::substitute_variable(v, substitutions))
+                            .map(|v| Self::substitute_variable(v, substitutions, func_name, span))
                             .collect();
                         Collection::List(substituted_vars)
                     }
                     Collection::Dict(map) => {
                         let substituted_map: BTreeMap<_, _> = map
                             .iter()
-                            .map(|(k, v)| (k.clone(), Self::substitute_variable(v, substitutions)))
+                            .map(|(k, v)| {
+                                (
+                                    k.clone(),
+                                    Self::substitute_variable(v, substitutions, func_name, span),
+                                )
+                            })
                             .collect();
                         Collection::Dict(substituted_map)
                     }
