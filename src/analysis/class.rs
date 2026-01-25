@@ -32,7 +32,12 @@ pub struct ClassAnalysis {
 /// This function:
 /// 1. Analyzes the `__init__` method as a special case to extract attribute shapes
 /// 2. Analyzes other methods for consistency checking
-pub fn analyze_class(class: &Class, global: &GlobalAnalysis) -> Result<ClassAnalysis> {
+///
+/// Returns the ClassAnalysis and a vector of errors from method analysis
+pub fn analyze_class(
+    class: &Class,
+    global: &GlobalAnalysis,
+) -> Result<(ClassAnalysis, Vec<anyhow::Error>)> {
     let init_method_name = intern("__init__");
 
     // Compute canonical id from symbol table (e.g., "module.ClassName")
@@ -97,6 +102,7 @@ pub fn analyze_class(class: &Class, global: &GlobalAnalysis) -> Result<ClassAnal
     // Check other methods
     let mut methods = HashMap::new();
     methods.insert(init_method_name, init_analysis);
+    let mut failed_methods = Vec::new();
 
     for (method_name, method_func) in &class.methods {
         if *method_name == init_method_name {
@@ -105,18 +111,24 @@ pub fn analyze_class(class: &Class, global: &GlobalAnalysis) -> Result<ClassAnal
 
         let mut method_analysis =
             FunctionAnalysis::new(method_func, Some(method_class_attributes.clone()));
-        method_analysis.analyze_func(method_func, global)?;
+
+        // Continue even if method analysis fails - collect the error
+        if let Err(e) = method_analysis.analyze_func(method_func, global) {
+            failed_methods.push(e);
+        }
         methods.insert(*method_name, method_analysis);
     }
 
-    Ok(ClassAnalysis {
+    let class_analysis = ClassAnalysis {
         canonical_id,
         id: class.identifier,
         file_path: class.file_path.clone(),
         attributes,
         methods,
         is_nn_module: class.is_nn_module,
-    })
+    };
+
+    Ok((class_analysis, failed_methods))
 }
 
 impl ClassAnalysis {
@@ -151,8 +163,12 @@ impl ClassAnalysis {
         let mut matched_param_indices = std::collections::HashSet::new();
 
         // Match positional arguments to parameters (skip instance parameter)
-        for (i, Parameter(param_name, param_annotation)) in
-            init_analysis.function.param_types.iter().skip(1).enumerate()
+        for (i, Parameter(param_name, param_annotation)) in init_analysis
+            .function
+            .param_types
+            .iter()
+            .skip(1)
+            .enumerate()
         {
             let arg_value = if i < args.len() {
                 Some(&args[i])

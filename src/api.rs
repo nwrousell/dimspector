@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use crate::analysis::{self, ShapeError};
+use crate::analysis::{self, AnalysisError};
 use crate::parse;
 use crate::{ParsedProject, ir};
 
@@ -17,7 +17,7 @@ impl Dimspector {
     /// Build a Dimspector from a project root, parsing and analyzing everything
     pub fn from_project_root(
         project_root: &Path,
-    ) -> anyhow::Result<(Self, Vec<(PathBuf, ShapeError)>)> {
+    ) -> anyhow::Result<(Self, Vec<(PathBuf, AnalysisError)>)> {
         log::info!(
             "Building Dimspector from project root: {}",
             project_root.display()
@@ -61,7 +61,7 @@ impl Dimspector {
         ))
     }
 
-    pub fn from_single_file(file: &Path) -> anyhow::Result<(Self, Vec<(PathBuf, ShapeError)>)> {
+    pub fn from_single_file(file: &Path) -> anyhow::Result<(Self, Vec<(PathBuf, AnalysisError)>)> {
         log::info!("Building Dimspector from single file: {}", file.display());
 
         // Parse
@@ -106,7 +106,7 @@ impl Dimspector {
         &mut self,
         file_path: &Path,
         file_content: &str,
-    ) -> anyhow::Result<Vec<(PathBuf, ShapeError)>> {
+    ) -> anyhow::Result<Vec<(PathBuf, AnalysisError)>> {
         // Update parsed_project - re-parse the file
         self.parsed_project.update_file(file_path, file_content)?;
 
@@ -136,7 +136,7 @@ impl Dimspector {
         // First, analyze all classes from all files so they're available for type resolution
         for file in &self.project_ir.files {
             for class in &file.classes {
-                // Ignore errors from other files' classes - we just need them registered
+                // Ignore all errors from other files' classes - we just need them registered
                 let _ = self.global_analysis.analyze_class(class);
             }
         }
@@ -155,7 +155,7 @@ impl Dimspector {
         &mut self,
         files: &HashSet<PathBuf>,
         file_contents: &std::collections::HashMap<PathBuf, String>,
-    ) -> anyhow::Result<Vec<(PathBuf, ShapeError)>> {
+    ) -> anyhow::Result<Vec<(PathBuf, AnalysisError)>> {
         let mut all_errors = Vec::new();
 
         for file_path in files {

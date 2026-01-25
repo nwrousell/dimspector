@@ -15,7 +15,7 @@ pub use crate::analysis::dimvars::{DimKind, DimVar, parse_dimvar};
 use crate::ir::{Class, Function, Identifier, Project};
 use crate::parse::SymbolTable;
 use anyhow::Result;
-pub use errors::ShapeError;
+pub use errors::{AnalysisError, ErrorContext, GenericAnalysisError, ShapeError};
 
 pub use class::ClassAnalysis;
 pub use function::FunctionAnalysis;

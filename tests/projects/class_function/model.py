@@ -8,7 +8,7 @@ class LinearModel(torch.nn.Module):
         self.weight = torch.randn(out_features, in_features)
         self.bias = torch.zeros(out_features)
 
-    def forward(self, x: Float[Tensor, "batch in"]) -> Float[Tensor, "batch out"]:
+    def forward(self, x: Float[Tensor, "batch in_features"]) -> Float[Tensor, "batch out"]:
         """Forward pass."""
         out = x @ torch.transpose(self.weight, 0, 1) + self.bias
         return out

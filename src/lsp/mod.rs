@@ -260,7 +260,7 @@ impl Backend {
         let uri_string = uri.as_str().to_string();
 
         // Run analysis in blocking task
-        let (diagnostics, error_count) = tokio::task::spawn_blocking(move || {
+        let (diagnostics, error_count, generic_error_messages) = tokio::task::spawn_blocking(move || {
             let mut dimspector_guard = dimspector.write().unwrap();
 
             // Check if dimspector is initialized
@@ -271,7 +271,7 @@ impl Backend {
                         "analyze_and_publish_diagnostics: Dimspector not initialized for {}",
                         file_path.display()
                     );
-                    return (Vec::new(), 0);
+                    return (Vec::new(), 0, Vec::new());
                 }
             };
 
@@ -281,33 +281,59 @@ impl Backend {
             match dimspector_instance.analyze_file(&file_path, &content) {
                 Ok(errors) => {
                     let error_count = errors.len();
-                    // Log each error found
-                    for (error_file_path, error) in &errors {
-                        log::error!("Error in {}: {}", error_file_path.display(), error);
+                    
+                    // Convert errors to LSP Diagnostics and collect generic error messages
+                    let mut diagnostics = Vec::new();
+                    let mut generic_error_messages = Vec::new();
+                    
+                    for (error_file_path, error) in errors {
+                        match error {
+                            crate::analysis::AnalysisError::Shape(shape_error) => {
+                                log::error!("Error in {}: {}", error_file_path.display(), shape_error);
+                                if let Some(diagnostic) = shape_error.to_diagnostic(&content, &uri_string) {
+                                    diagnostics.push(diagnostic);
+                                }
+                            }
+                            crate::analysis::AnalysisError::Generic(generic_error) => {
+                                // Log generic errors to LSP output
+                                log::error!(
+                                    "Analysis error in {}: {}",
+                                    error_file_path.display(),
+                                    generic_error
+                                );
+                                // Collect message to send to client later
+                                generic_error_messages.push(format!(
+                                    "Analysis error in {}: {}",
+                                    generic_error.context,
+                                    generic_error.message
+                                ));
+                            }
+                        }
                     }
-                    // Convert ShapeErrors to LSP Diagnostics
-                    let diagnostics: Vec<_> = errors
-                        .into_iter()
-                        .filter_map(|(_, error)| error.to_diagnostic(&content, &uri_string))
-                        .collect();
+                    
                     log::info!(
                         "Analysis complete: {} errors found in {}",
                         error_count,
                         file_path.display()
                     );
-                    (diagnostics, error_count)
+                    (diagnostics, error_count, generic_error_messages)
                 }
                 Err(e) => {
                     log::error!("Failed to analyze file {}: {:?}", file_path.display(), e);
-                    (Vec::new(), 0)
+                    (Vec::new(), 0, Vec::new())
                 }
             }
         })
         .await
         .unwrap_or_else(|e| {
             log::error!("Analysis task panicked: {:?}", e);
-            (Vec::new(), 0)
+            (Vec::new(), 0, Vec::new())
         });
+
+        // Send generic error messages to client
+        for message in generic_error_messages {
+            client.log_message(MessageType::ERROR, message).await;
+        }
 
         // Log results
         if error_count > 0 {

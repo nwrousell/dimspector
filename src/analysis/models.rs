@@ -919,8 +919,6 @@ impl Model for TransposeModel {
 pub struct SignatureModel {
     pub name: String,
     pub param_types: Vec<Parameter>,
-    // TODO: in the future with the possibility of mutations,
-    // doesn't necc need to have return annotation
     pub return_type: Option<Variable>,
 }
 

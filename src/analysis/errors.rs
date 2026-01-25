@@ -284,3 +284,83 @@ impl ShapeError {
         })
     }
 }
+
+/// Context for where a generic analysis error occurred
+#[derive(Debug, Clone)]
+pub enum ErrorContext {
+    Class { name: String },
+    Function { name: String },
+    Method { class_name: String, method_name: String },
+}
+
+impl std::fmt::Display for ErrorContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ErrorContext::Class { name } => write!(f, "class {}", name),
+            ErrorContext::Function { name } => write!(f, "function {}", name),
+            ErrorContext::Method { class_name, method_name } => {
+                write!(f, "method {}.{}", class_name, method_name)
+            }
+        }
+    }
+}
+
+/// Generic analysis error (non-shape-related) with context
+#[derive(Debug, Clone)]
+pub struct GenericAnalysisError {
+    pub message: String,
+    pub context: ErrorContext,
+    pub source_span: Option<SourceSpan>,
+}
+
+impl GenericAnalysisError {
+    pub fn new(message: String, context: ErrorContext) -> Self {
+        Self {
+            message,
+            context,
+            source_span: None,
+        }
+    }
+
+    pub fn with_span(message: String, context: ErrorContext, span: SourceSpan) -> Self {
+        Self {
+            message,
+            context,
+            source_span: Some(span),
+        }
+    }
+}
+
+impl std::fmt::Display for GenericAnalysisError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.context, self.message)
+    }
+}
+
+/// Combined error type for analysis, encompassing both shape errors and generic errors
+#[derive(Debug, Clone)]
+pub enum AnalysisError {
+    Shape(ShapeError),
+    Generic(GenericAnalysisError),
+}
+
+impl From<ShapeError> for AnalysisError {
+    fn from(error: ShapeError) -> Self {
+        AnalysisError::Shape(error)
+    }
+}
+
+impl From<GenericAnalysisError> for AnalysisError {
+    fn from(error: GenericAnalysisError) -> Self {
+        AnalysisError::Generic(error)
+    }
+}
+
+impl std::fmt::Display for AnalysisError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AnalysisError::Shape(e) => write!(f, "{}", e),
+            AnalysisError::Generic(e) => write!(f, "{}", e),
+        }
+    }
+}
