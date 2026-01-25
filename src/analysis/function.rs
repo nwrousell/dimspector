@@ -131,7 +131,7 @@ impl FunctionAnalysis {
                             span,
                             &arg_spans,
                         )?;
-                        Variable::Tensor(out_shape)
+                        out_shape
                     } else {
                         let out_shape = global.models.torch.broadcast.infer(
                             vec![l_var, r_var],
@@ -139,7 +139,7 @@ impl FunctionAnalysis {
                             span,
                             &arg_spans,
                         )?;
-                        Variable::Tensor(out_shape)
+                        out_shape
                     }
                 }
                 (Variable::Tensor(shape), _) | (_, Variable::Tensor(shape)) => {
@@ -425,7 +425,15 @@ impl FunctionAnalysis {
                 }
 
                 // fallback to regular function call
-                self.eval_function(function, &args_sets, &kwargs_sets, span, &arg_spans, global)
+                self.eval_function(
+                    domain,
+                    function,
+                    &args_sets,
+                    &kwargs_sets,
+                    span,
+                    &arg_spans,
+                    global,
+                )
             }
         }
     }
@@ -557,7 +565,7 @@ impl FunctionAnalysis {
                     } else {
                         // Use the signature model to infer the result
                         let result_shape = signature_model.infer(args, kwargs, span, arg_spans)?;
-                        out_vars.insert(Variable::Tensor(result_shape));
+                        out_vars.insert(result_shape);
                     }
                 }
             } else {
@@ -571,6 +579,7 @@ impl FunctionAnalysis {
 
     fn eval_function(
         &mut self,
+        domain: &AnalysisDomain,
         function: &Expr,
         args_sets: &[HashSet<Variable>],
         kwargs_sets: &[(Identifier, HashSet<Variable>)],
@@ -580,10 +589,41 @@ impl FunctionAnalysis {
     ) -> Result<HashSet<Variable>> {
         let mut out_vars = HashSet::new();
 
-        // Resolve function name - for now assume it's an ident or attribute chain
-        let func_name = self.expr_to_dot_string(function, global);
+        let (func_name, receiver_args) = if let ExprKind::Attribute { value, attr } = &function.kind
+        {
+            let receiver_vars = self.eval_expr(domain, value, global)?;
 
-        let args_products = args_sets.iter().multi_cartesian_product();
+            if receiver_vars
+                .iter()
+                .any(|v| matches!(v, Variable::Tensor(_)))
+            {
+                let torch_func_name = format!("torch.Tensor.{}", resolve(*attr));
+
+                if global.models.resolve(&torch_func_name).is_some() {
+                    // routing
+                    (torch_func_name, Some(receiver_vars))
+                } else {
+                    //  if dne, def
+                    (self.expr_to_dot_string(function, global), None)
+                }
+            } else {
+                (self.expr_to_dot_string(function, global), None)
+            }
+        } else {
+            (self.expr_to_dot_string(function, global), None)
+        };
+
+        let final_args_sets: Vec<&HashSet<Variable>> = if let Some(ref receiver) = receiver_args {
+            std::iter::once(receiver).chain(args_sets.iter()).collect()
+        } else {
+            args_sets.iter().collect()
+        };
+
+        // Model resolution and inference (unified logic for both tensor methods and normal functions)
+        let args_products = final_args_sets
+            .iter()
+            .map(|s| s.iter())
+            .multi_cartesian_product();
         let kw_names = kwargs_sets.iter().map(|(n, _)| *n);
         let kwargs_products: Vec<HashMap<Identifier, _>> = kwargs_sets
             .iter()
@@ -600,9 +640,7 @@ impl FunctionAnalysis {
                     if any_top {
                         out_vars.insert(Variable::Top);
                     } else {
-                        out_vars.insert(Variable::Tensor(
-                            model.infer(args, kwargs, span, arg_spans)?,
-                        ));
+                        out_vars.insert(model.infer(args, kwargs, span, arg_spans)?);
                     }
                 }
             }
@@ -859,18 +897,57 @@ impl FunctionAnalysis {
 
             match &target.kind {
                 ExprKind::Ident(name) => {
-                    domain.insert(name.clone(), res_var);
+                    domain.insert(*name, res_var);
                 }
                 ExprKind::Attribute { value, attr } => {
                     // Handle self.X assignments for methods
-                    if let ExprKind::Ident(self_ident) = &value.kind {
-                        if resolve(*self_ident) == "self" {
-                            // Store as "self.X" in domain
-                            let self_attr_name = intern(&format!("self.{}", resolve(*attr)));
-                            domain.insert(self_attr_name, res_var);
-                        }
+                    if let ExprKind::Ident(self_ident) = &value.kind
+                        && resolve(*self_ident) == "self"
+                    {
+                        // Store as "self.X" in domain
+                        let self_attr_name = intern(&format!("self.{}", resolve(*attr)));
+                        domain.insert(self_attr_name, res_var);
                     }
-                    // Ignore other attribute assignments for now
+                }
+                // Ignore other attribute assignments for now
+                ExprKind::Tuple(names) => {
+                    if res_var.iter().any(|v| {
+                        matches!(
+                            v,
+                            Variable::Collection(Collection::Tuple(_) | Collection::List(_))
+                        )
+                    }) {
+                        // one of the result vars should allow for assignment
+                        // for each thing we assign to, the permutation of possibilities
+                        // are interdependent, but we take the loss in precision
+                        // just unioning over position wise sets
+                        let mut out_combs: Vec<HashSet<Variable>> =
+                            names.iter().map(|_| HashSet::new()).collect();
+
+                        for var in res_var.iter() {
+                            if let Variable::Collection(
+                                Collection::List(elts) | Collection::Tuple(elts),
+                            ) = var
+                            {
+                                assert_eq!(elts.len(), names.len());
+                                out_combs.iter_mut().zip_eq(elts.iter()).for_each(|(s, v)| {
+                                    s.insert(v.clone());
+                                });
+                            } else {
+                                out_combs.iter_mut().for_each(|s| {
+                                    s.insert(Variable::Top);
+                                });
+                            }
+                        }
+
+                        names.iter().zip_eq(out_combs.iter()).for_each(|(n, vs)| {
+                            if let ExprKind::Ident(name) = &n.kind {
+                                domain.insert(*name, vs.clone());
+                            }
+                        });
+                    } else {
+                        // else we should map everything to top
+                    }
                 }
                 _ => {
                     // Ignore other cases for now

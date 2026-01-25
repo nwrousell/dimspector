@@ -249,46 +249,6 @@ fn mul_named_pows(a: &[NamedPow], b: &[NamedPow]) -> Vec<NamedPow> {
     result
 }
 
-impl DimVar {
-    pub fn is_one(&self) -> bool {
-        if let DimKind::Concrete(c1) = self.kind() {
-            c1 == 1
-        } else {
-            false
-        }
-    }
-
-    /// transforms a DimVar into its canonical polynomial form
-    pub fn canonical(&self) -> CanonicalDimVar {
-        match self.kind() {
-            DimKind::Named(n) => CanonicalDimVar(vec![Term::new(1, vec![NamedPow::new(n, 1)])]),
-            DimKind::Concrete(c) => CanonicalDimVar(vec![Term::new(c, vec![])]),
-            DimKind::Add { left, right } => {
-                let left = left.canonical();
-                let right = right.canonical();
-                return left.add(&right);
-            }
-            DimKind::Mul { left, right } => {
-                let left = left.canonical();
-                let right = right.canonical();
-                return left.mul(&right);
-            }
-        }
-    }
-
-    pub fn substitute(&self, map: &HashMap<String, DimVar>) -> Result<DimVar> {
-        Ok(match self.kind() {
-            DimKind::Named(name) => map
-                .get(&name)
-                .cloned()
-                .ok_or_else(|| anyhow!("can't resolve callee dim var {}", name))?,
-            DimKind::Mul { left, right } => left.substitute(map)? * right.substitute(map)?,
-            DimKind::Add { left, right } => left.substitute(map)? + right.substitute(map)?,
-            DimKind::Concrete(_) => self.clone(),
-        })
-    }
-}
-
 impl Add for DimVar {
     type Output = DimVar;
 
@@ -376,7 +336,6 @@ impl DimVar {
     pub fn kind(&self) -> DimKind {
         self.kind.clone()
     }
-
     pub fn binop(&self, other: &DimVar, op: crate::ir::types::Binop) -> crate::analysis::Variable {
         use crate::analysis::Variable;
         use crate::ir::types::Binop;
@@ -393,6 +352,44 @@ impl DimVar {
             },
             _ => Variable::Top,
         }
+    }
+
+    pub fn is_one(&self) -> bool {
+        if let DimKind::Concrete(c1) = self.kind() {
+            c1 == 1
+        } else {
+            false
+        }
+    }
+
+    /// transforms a DimVar into its canonical polynomial form
+    pub fn canonical(&self) -> CanonicalDimVar {
+        match self.kind() {
+            DimKind::Named(n) => CanonicalDimVar(vec![Term::new(1, vec![NamedPow::new(n, 1)])]),
+            DimKind::Concrete(c) => CanonicalDimVar(vec![Term::new(c, vec![])]),
+            DimKind::Add { left, right } => {
+                let left = left.canonical();
+                let right = right.canonical();
+                return left.add(&right);
+            }
+            DimKind::Mul { left, right } => {
+                let left = left.canonical();
+                let right = right.canonical();
+                return left.mul(&right);
+            }
+        }
+    }
+
+    pub fn substitute(&self, map: &HashMap<String, DimVar>) -> Result<DimVar> {
+        Ok(match self.kind() {
+            DimKind::Named(name) => map
+                .get(&name)
+                .cloned()
+                .ok_or_else(|| anyhow!("can't resolve callee dim var {}", name))?,
+            DimKind::Mul { left, right } => left.substitute(map)? * right.substitute(map)?,
+            DimKind::Add { left, right } => left.substitute(map)? + right.substitute(map)?,
+            DimKind::Concrete(_) => self.clone(),
+        })
     }
 
     pub fn div(&self, rhs: &Self) -> Result<Self> {

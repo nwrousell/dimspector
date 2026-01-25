@@ -8,22 +8,22 @@ use petgraph::{
 };
 
 use ruff_python_ast::{
-    Expr as ASTExpr, ExprAttribute, ExprBinOp, ExprCall, ExprCompare, ExprDict, ExprFString,
-    ExprList, ExprName, ExprNumberLiteral, ExprSlice, ExprStringLiteral, ExprSubscript, ExprTuple,
-    ExprUnaryOp, Keyword, Number, Stmt as ASTStmt, StmtAssign, StmtAugAssign, StmtClassDef,
-    StmtExpr, StmtFor, StmtFunctionDef, StmtGlobal, StmtIf, StmtReturn, StmtWhile, StmtWith,
-    UnaryOp,
+    Expr as ASTExpr, ExprAttribute, ExprBinOp, ExprCall, ExprCompare, ExprDict,
+    ExprEllipsisLiteral, ExprFString, ExprList, ExprName, ExprNumberLiteral, ExprSlice,
+    ExprStringLiteral, ExprSubscript, ExprTuple, ExprUnaryOp, Keyword, Number, Stmt as ASTStmt,
+    StmtAssign, StmtAugAssign, StmtClassDef, StmtExpr, StmtFor, StmtFunctionDef, StmtGlobal,
+    StmtIf, StmtReturn, StmtWhile, StmtWith, UnaryOp,
 };
 use ruff_text_size::TextRange;
 use std::path::PathBuf;
 
 use crate::{
-    analysis::{DimKind, DimVar, parse_dimvar},
-    ir::types::{Binop, Class, Constant, ExprKind, Function, Identifier, Slice, Type, intern},
+    analysis::{Collection, Shape, Variable},
+    ir::types::{BasicBlock, BasicBlockIdx, Cfg, Expr, PartialCfg, Statement, Terminator},
 };
 use crate::{
-    analysis::{Shape, Variable},
-    ir::types::{BasicBlock, BasicBlockIdx, Cfg, Expr, PartialCfg, Statement, Terminator},
+    analysis::{DimKind, DimVar},
+    ir::types::{Binop, Class, Constant, ExprKind, Function, Identifier, Slice, Type, intern},
 };
 use crate::{ir::resolve, parse::SymbolTable};
 
@@ -180,9 +180,8 @@ impl LowerBody {
                             if let ASTExpr::StringLiteral(dvar_str) = subscript.slice.as_ref() {
                                 let dvar = dvar_str.value.to_str();
                                 // Use parse_dimvar to correctly handle both numeric (Concrete) and named dimensions
-                                ty = Variable::DimVar(parse_dimvar(dvar).unwrap_or_else(|_| {
-                                    DimVar::new(DimKind::Named(dvar.to_string()))
-                                }));
+                                ty =
+                                    Variable::DimVar(DimVar::new(DimKind::Named(dvar.to_string())));
                             }
                         }
                     }
@@ -192,12 +191,10 @@ impl LowerBody {
             params.push((intern(identifier.as_str()), Some(ty)));
         }
 
-        // TODO: handle tuple returns + factor out the logic identical from above
+        // Handle return type annotations (supports single returns and tuple returns)
         let mut returns = None;
         if let Some(ret_ty) = &func.returns {
-            if let Some(shape_str) = LowerBody::extract_shape_string(ret_ty) {
-                returns = Some(vec![Variable::Tensor(Shape::from_str(&shape_str))]);
-            }
+            returns = Some(vec![LowerBody::extract_variable_from_annotation(ret_ty)]);
         }
 
         LowerBody {
@@ -231,6 +228,47 @@ impl LowerBody {
         }
 
         tower_lsp::lsp_types::Position::new(line, character)
+    }
+
+    /// Extract a Variable from a type annotation.
+    /// Supports single types (shapes, dimvars) and tuple types.
+    fn extract_variable_from_annotation(annotation: &ASTExpr) -> Variable {
+        // Check if it's a Tuple[...] or tuple[...] annotation
+        if let ASTExpr::Subscript(subscript) = annotation {
+            if let ASTExpr::Name(name) = subscript.value.as_ref() {
+                if name.id.as_str() == "tuple" || name.id.as_str() == "Tuple" {
+                    // Handle Tuple[...] or tuple[...] format
+                    if let ASTExpr::Tuple(tuple) = subscript.slice.as_ref() {
+                        let elements: Vec<Variable> = tuple
+                            .elts
+                            .iter()
+                            .map(|elt| LowerBody::extract_variable_from_annotation(elt))
+                            .collect();
+                        return Variable::Collection(Collection::Tuple(elements));
+                    }
+                }
+            }
+        }
+
+        // Try to extract shape string
+        if let Some(shape_str) = LowerBody::extract_shape_string(annotation) {
+            return Variable::Tensor(Shape::from_str(&shape_str));
+        }
+
+        // Try to extract dimvar (int["dvar"] format)
+        if let ASTExpr::Subscript(subscript) = annotation {
+            if let ASTExpr::Name(name) = subscript.value.as_ref() {
+                if name.id.as_str() == "int" {
+                    if let ASTExpr::StringLiteral(dvar_str) = subscript.slice.as_ref() {
+                        let dvar = dvar_str.value.to_str();
+                        return Variable::DimVar(DimVar::new(DimKind::Named(dvar.to_string())));
+                    }
+                }
+            }
+        }
+
+        // Default to Top if we can't extract anything
+        Variable::Top
     }
 
     /// Extract shape string from type annotation.
