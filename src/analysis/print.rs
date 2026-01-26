@@ -211,7 +211,7 @@ pub fn function_with_inferred_shapes_to_string(
     }
     output.push_str(")");
 
-    if let Some(ret_var) = &ir.return_type {
+    if let Some((ret_var, _span)) = &ir.return_type {
         output.push_str(" -> ");
         // Handle tuple returns by printing elements comma-separated
         match ret_var {

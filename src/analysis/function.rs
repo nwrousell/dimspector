@@ -5,11 +5,12 @@ use itertools::{Either, Itertools};
 use miette::SourceSpan;
 
 use crate::analysis::dimvars::{DimKind, DimVar};
+use crate::analysis::errors::ShapeError;
 use crate::analysis::models::{ArgSpans, Model};
 use crate::analysis::types::{Collection, DimSlice, Shape, Variable};
 use crate::ir::types::{Binop, Constant, ExprKind, Location, Slice, Type};
 use crate::ir::{Expr, Function, Identifier, Parameter, Statement, Terminator, intern, resolve};
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 
 use super::print;
 use super::{AnalysisDomain, GlobalAnalysis, JoinSemiLattice};
@@ -57,6 +58,62 @@ impl FunctionAnalysis {
             assignments: HashMap::new(),
             function: func.clone(),
         }
+    }
+
+    /// Validate that return type only uses symbolic dimvars defined by parameters or class attributes
+    pub(crate) fn check_signature(&self) -> anyhow::Result<()> {
+        let func = &self.function;
+
+        // If no return type annotation, nothing to check
+        let Some((ret_var, ret_span)) = &func.return_type else {
+            return Ok(());
+        };
+
+        // Collect all symbolic dimvar names defined by parameters
+        let mut defined_dimvar_names = HashSet::new();
+        for Parameter(_, var_opt) in &func.param_types {
+            if let Some(var) = var_opt {
+                defined_dimvar_names.extend(var.collect_symbolic_dimvars());
+            }
+        }
+
+        // For methods, also collect dimvar names from class attributes (self.X from __init__)
+        if let Some(domain) = self.state.get(&Location::START) {
+            for (ident_str, vars) in domain {
+                let name = resolve(*ident_str);
+                // Class attributes are self.X
+                if name.starts_with("self.") {
+                    for var in vars {
+                        defined_dimvar_names.extend(var.collect_symbolic_dimvars());
+                    }
+                }
+            }
+        }
+
+        // Collect all symbolic dimvar names used in return type
+        let return_dimvar_names = ret_var.collect_symbolic_dimvars();
+
+        // Determine if this is a method (has class_attributes)
+        let is_method = self
+            .state
+            .get(&Location::START)
+            .map(|domain| domain.keys().any(|k| resolve(*k).starts_with("self.")))
+            .unwrap_or(false);
+
+        // Check for undefined dimvars
+        for dimvar_name in return_dimvar_names {
+            if !defined_dimvar_names.contains(&dimvar_name) {
+                // Use the return type's span
+                return Err(anyhow!(ShapeError::UndefinedReturnDimVar {
+                    dimvar_name,
+                    func_name: resolve(func.identifier).to_string(),
+                    is_method,
+                    span: *ret_span,
+                }));
+            }
+        }
+
+        Ok(())
     }
 
     fn fold_dimvars(&self, left_dimvar: DimVar, right_dimvar: DimVar, op: Binop) -> Variable {
@@ -986,6 +1043,9 @@ impl FunctionAnalysis {
 
     /// Run single-pass dataflow analysis on function
     pub(crate) fn analyze_func(&mut self, func: &Function, global: &GlobalAnalysis) -> Result<()> {
+        // Validate signature before analysis
+        self.check_signature()?;
+
         for loc in func.locations.iter() {
             let mut domain = AnalysisDomain::new();
             let preds = func.predecessors(loc);

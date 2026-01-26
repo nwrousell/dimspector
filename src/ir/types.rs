@@ -54,6 +54,7 @@ pub struct Class {
     pub methods: HashMap<Identifier, Function>,
     /// Whether this class inherits from torch.nn.Module
     pub is_nn_module: bool,
+    pub span: miette::SourceSpan,
 }
 
 pub type Cfg = DiGraph<BasicBlock, ()>;
@@ -93,9 +94,10 @@ pub struct Function {
     pub file_path: std::path::PathBuf,
     pub cfg: Cfg,
     pub param_types: Vec<Parameter>,
-    pub return_type: Option<Variable>,
+    pub return_type: Option<(Variable, miette::SourceSpan)>,
     pub locations: Vec<Location>,
     pub rpo: Vec<BasicBlockIdx>,
+    pub span: miette::SourceSpan,
 }
 
 #[derive(Clone, Debug)]
@@ -113,7 +115,8 @@ impl Function {
         file_path: std::path::PathBuf,
         cfg: Cfg,
         param_types: Vec<(Identifier, Option<Variable>)>,
-        return_type: Option<Variable>,
+        return_type: Option<(Variable, miette::SourceSpan)>,
+        span: miette::SourceSpan,
     ) -> Function {
         let rpo: Vec<BasicBlockIdx> = utils::reverse_post_order(&cfg, 0.into())
             .into_iter()
@@ -142,6 +145,7 @@ impl Function {
             rpo,
             param_types,
             return_type,
+            span,
         }
     }
 

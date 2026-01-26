@@ -35,7 +35,7 @@ impl fmt::Display for Function {
         write!(f, "def {}(", resolve(self.identifier))?;
         write_comma_separated(f, &self.param_types)?;
         write!(f, ")")?;
-        if let Some(ret_var) = &self.return_type {
+        if let Some((ret_var, _span)) = &self.return_type {
             write!(f, " -> ")?;
             // Handle tuple returns by printing elements comma-separated
             match ret_var {

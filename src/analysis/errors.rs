@@ -134,6 +134,16 @@ pub enum ShapeError {
         #[label("dimension `{dimvar_name}` must appear in a function parameter to be used here")]
         span: SourceSpan,
     },
+
+    /// Return type uses dimension variable not defined by parameters
+    #[error("return type uses dimension `{dimvar_name}` which is not defined by any parameter")]
+    #[diagnostic(code(shape::undefined_return_dimvar))]
+    UndefinedReturnDimVar {
+        dimvar_name: String,
+        func_name: String,
+        is_method: bool,
+        span: SourceSpan,
+    },
 }
 
 impl ShapeError {
@@ -217,7 +227,19 @@ impl ShapeError {
     pub fn to_diagnostic(&self, file_content: &str, file_uri: &str) -> Option<LspDiagnostic> {
         use tower_lsp::lsp_types::{DiagnosticRelatedInformation, Location, Url};
 
-        let message = self.to_string();
+        // Customize message for UndefinedReturnDimVar based on is_method
+        let message = match self {
+            ShapeError::UndefinedReturnDimVar { dimvar_name, is_method, .. } => {
+                let base = format!("return type uses dimension `{}` which is not defined by any parameter", dimvar_name);
+                let hint = if *is_method {
+                    format!("\nHelp: dimension `{}` must appear in a function parameter or in __init__ parameters", dimvar_name)
+                } else {
+                    format!("\nHelp: dimension `{}` must appear in a function parameter", dimvar_name)
+                };
+                format!("{}{}", base, hint)
+            }
+            _ => self.to_string(),
+        };
         let severity = DiagnosticSeverity::ERROR;
 
         // Get range and related_information from span if available
@@ -280,7 +302,8 @@ impl ShapeError {
             | ShapeError::UnequalRank { span, .. }
             | ShapeError::MissingArgument { span, .. }
             | ShapeError::MatmulWithScalar { span, .. }
-            | ShapeError::UndefinedDimVar { span, .. } => {
+            | ShapeError::UndefinedDimVar { span, .. }
+            | ShapeError::UndefinedReturnDimVar { span, .. } => {
                 (Self::span_to_range(span, file_content), None)
             }
             // For errors without spans, use a default range at the start of the file

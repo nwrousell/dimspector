@@ -606,7 +606,13 @@ impl Model for PassthroughModel {
         span: SourceSpan,
         _arg_spans: &ArgSpans,
     ) -> Result<Variable> {
-        let args = resolve_args(args, kwargs, &SINGLE_TENSOR_INPUT_SIGNATURE, "torch.relu", span)?;
+        let args = resolve_args(
+            args,
+            kwargs,
+            &SINGLE_TENSOR_INPUT_SIGNATURE,
+            "torch.relu",
+            span,
+        )?;
         let input_shape = get_args!(args, Eltwise,
             input: as_shape => "Tensor",
         )?;
@@ -852,7 +858,13 @@ impl Model for TensorReshapeModel {
         span: SourceSpan,
         arg_spans: &ArgSpans,
     ) -> Result<Variable> {
-        let resolved_args = resolve_args(args, kwargs, &TENSOR_RESHAPE_SIGNATURE, "tensor.reshape", span)?;
+        let resolved_args = resolve_args(
+            args,
+            kwargs,
+            &TENSOR_RESHAPE_SIGNATURE,
+            "tensor.reshape",
+            span,
+        )?;
         let variadic_tuple = resolved_args
             .get(&intern("variadic"))
             .expect("variadic signature always has variadic tuple")
@@ -936,7 +948,7 @@ impl SignatureModel {
         SignatureModel {
             name: resolve(func.identifier),
             param_types: func.param_types.clone(),
-            return_type: func.return_type.clone(),
+            return_type: func.return_type.as_ref().map(|(var, _span)| var.clone()),
         }
     }
 }
@@ -1118,10 +1130,11 @@ impl Model for SignatureModel {
 
         // Check deferred constraints (expression dimvars like k-1)
         for constraint in deferred_constraints {
-            let expected_dv =
-                constraint
-                    .param_dv
-                    .substitute(&substitution_map, &self.name, constraint.arg_span)?;
+            let expected_dv = constraint.param_dv.substitute(
+                &substitution_map,
+                &self.name,
+                constraint.arg_span,
+            )?;
             if expected_dv != *constraint.arg_dv {
                 // Use SignatureParamMismatch for tensor shapes, MismatchedDims for single dimvars
                 match (constraint.param_shape, constraint.arg_shape) {

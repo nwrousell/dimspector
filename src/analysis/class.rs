@@ -338,7 +338,7 @@ impl ClassAnalysis {
             .function
             .return_type
             .as_ref()
-            .map(|ret_var| {
+            .map(|(ret_var, _span)| {
                 Self::substitute_variable(ret_var, &instance.substitutions, &method_name, span)
             });
 

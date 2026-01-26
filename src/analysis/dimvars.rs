@@ -362,6 +362,22 @@ impl DimVar {
         }
     }
 
+    /// Recursively collect all symbolic (Named) dimvar names from this DimVar
+    pub fn collect_symbolic_names(&self) -> std::collections::HashSet<String> {
+        let mut names = std::collections::HashSet::new();
+        match &self.kind {
+            DimKind::Named(name) => {
+                names.insert(name.clone());
+            }
+            DimKind::Concrete(_) => {}
+            DimKind::Add { left, right } | DimKind::Mul { left, right } => {
+                names.extend(left.collect_symbolic_names());
+                names.extend(right.collect_symbolic_names());
+            }
+        };
+        names
+    }
+
     /// transforms a DimVar into its canonical polynomial form
     pub fn canonical(&self) -> CanonicalDimVar {
         match self.kind() {
@@ -387,18 +403,15 @@ impl DimVar {
         span: miette::SourceSpan,
     ) -> Result<DimVar> {
         use crate::analysis::errors::ShapeError;
-        
+
         Ok(match self.kind() {
-            DimKind::Named(name) => map
-                .get(&name)
-                .cloned()
-                .ok_or_else(|| {
-                    anyhow!(ShapeError::UndefinedDimVar {
-                        dimvar_name: name.clone(),
-                        func_name: func_name.to_string(),
-                        span,
-                    })
-                })?,
+            DimKind::Named(name) => map.get(&name).cloned().ok_or_else(|| {
+                anyhow!(ShapeError::UndefinedDimVar {
+                    dimvar_name: name.clone(),
+                    func_name: func_name.to_string(),
+                    span,
+                })
+            })?,
             DimKind::Mul { left, right } => {
                 left.substitute(map, func_name, span)? * right.substitute(map, func_name, span)?
             }

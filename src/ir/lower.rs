@@ -14,7 +14,7 @@ use ruff_python_ast::{
     StmtExpr, StmtFor, StmtFunctionDef, StmtGlobal, StmtIf, StmtReturn, StmtWhile, StmtWith,
     UnaryOp,
 };
-use ruff_text_size::TextRange;
+use ruff_text_size::{Ranged, TextRange};
 use std::path::PathBuf;
 
 use crate::parse::SymbolTable;
@@ -24,7 +24,9 @@ use crate::{
 };
 use crate::{
     analysis::{DimKind, DimVar},
-    ir::types::{Binop, Class, Constant, ExprKind, Function, Identifier, Slice, Type, intern},
+    ir::types::{
+        Binop, Class, Constant, ExprKind, Function, Identifier, Slice, Type, intern, range_to_span,
+    },
 };
 
 pub fn lower_class(
@@ -66,6 +68,7 @@ pub fn lower_class(
         file_path: file_path.clone(),
         methods,
         is_nn_module,
+        span: range_to_span(class_def.range),
     })
 }
 
@@ -130,12 +133,13 @@ pub fn lower_func(
         cfg,
         lowerer.param_types,
         lowerer.return_type,
+        range_to_span(func.range),
     ))
 }
 
 struct LowerBody {
     pub param_types: Vec<(Identifier, Option<Variable>)>,
-    pub return_type: Option<Variable>,
+    pub return_type: Option<(Variable, miette::SourceSpan)>,
     pub graph: PartialCfg, // might need to turn this into DiGraph<Option<BasicBlock>, ()>
     pub cur_block: Vec<Statement>,
     pub cur_loc: Option<BasicBlockIdx>,
@@ -167,14 +171,13 @@ impl LowerBody {
         }
 
         // Handle return type annotations
-        let return_var = func
-            .returns
-            .as_ref()
-            .and_then(|ret_ty| LowerBody::parse_annotation(ret_ty));
+        let return_type = func.returns.as_ref().and_then(|ret_ty| {
+            LowerBody::parse_annotation(ret_ty).map(|var| (var, range_to_span(ret_ty.range())))
+        });
 
         LowerBody {
             param_types: params,
-            return_type: return_var,
+            return_type,
             graph,
             cur_block: Vec::new(),
             cur_loc: Some(start_block),

@@ -197,6 +197,37 @@ impl Variable {
         }
     }
 
+    /// Recursively collect all symbolic dimvar names from this Variable
+    pub fn collect_symbolic_dimvars(&self) -> std::collections::HashSet<String> {
+        let mut names = std::collections::HashSet::new();
+        match self {
+            Variable::DimVar(dv) => {
+                names.extend(dv.collect_symbolic_names());
+            }
+            Variable::Tensor(shape) => {
+                for dv in &shape.0 {
+                    names.extend(dv.collect_symbolic_names());
+                }
+            }
+            Variable::Collection(col) => {
+                match col {
+                    Collection::Tuple(vars) | Collection::List(vars) => {
+                        for var in vars {
+                            names.extend(var.collect_symbolic_dimvars());
+                        }
+                    }
+                    Collection::Dict(map) => {
+                        for var in map.values() {
+                            names.extend(var.collect_symbolic_dimvars());
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        names
+    }
+
     pub fn as_concrete_dimvar(&self) -> Option<i64> {
         if let Some(dimvar) = self.as_dimvar() {
             match dimvar.kind() {
