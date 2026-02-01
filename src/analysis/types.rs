@@ -229,6 +229,44 @@ impl Variable {
         names
     }
 
+    /// Collect dimvar names that have singleton definitions
+    /// (appear as standalone Named dimvars, not in expressions)
+    pub fn collect_singleton_dimvar_definitions(&self) -> std::collections::HashSet<String> {
+        let mut names = std::collections::HashSet::new();
+        match self {
+            Variable::DimVar(dv) => {
+                // Integer params are singleton definitions
+                if let DimKind::Named(name) = dv.kind() {
+                    names.insert(name);
+                }
+            }
+            Variable::Tensor(shape) => {
+                // Each dimension that is a standalone Named dimvar
+                for dv in &shape.0 {
+                    if let DimKind::Named(name) = dv.kind() {
+                        names.insert(name);
+                    }
+                }
+            }
+            Variable::Collection(col) => {
+                match col {
+                    Collection::Tuple(vars) | Collection::List(vars) => {
+                        for var in vars {
+                            names.extend(var.collect_singleton_dimvar_definitions());
+                        }
+                    }
+                    Collection::Dict(map) => {
+                        for var in map.values() {
+                            names.extend(var.collect_singleton_dimvar_definitions());
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        names
+    }
+
     pub fn as_concrete_dimvar(&self) -> Option<i64> {
         if let Some(dimvar) = self.as_dimvar() {
             match dimvar.kind() {

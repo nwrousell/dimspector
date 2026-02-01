@@ -60,55 +60,64 @@ impl FunctionAnalysis {
         }
     }
 
-    /// Validate that return type only uses symbolic dimvars defined by parameters or class attributes
+    /// Validate that all symbolic dimvars used in the signature have singleton definitions in parameters
     pub(crate) fn check_signature(&self) -> anyhow::Result<()> {
         let func = &self.function;
 
-        // If no return type annotation, nothing to check
-        let Some((ret_var, ret_span)) = &func.return_type else {
-            return Ok(());
-        };
-
-        // Collect all symbolic dimvar names defined by parameters
-        let mut defined_dimvar_names = HashSet::new();
+        // Step 1: Collect singleton definitions from parameters only (+ __init__ for methods)
+        let mut singleton_definitions = HashSet::new();
         for Parameter(_, var_opt) in &func.param_types {
             if let Some(var) = var_opt {
-                defined_dimvar_names.extend(var.collect_symbolic_dimvars());
+                singleton_definitions.extend(var.collect_singleton_dimvar_definitions());
             }
         }
 
-        // For methods, also collect dimvar names from class attributes (self.X from __init__)
-        if let Some(domain) = self.state.get(&Location::START) {
-            for (ident_str, vars) in domain {
-                let name = resolve(*ident_str);
-                // Class attributes are self.X
-                if name.starts_with("self.") {
-                    for var in vars {
-                        defined_dimvar_names.extend(var.collect_symbolic_dimvars());
-                    }
-                }
-            }
-        }
-
-        // Collect all symbolic dimvar names used in return type
-        let return_dimvar_names = ret_var.collect_symbolic_dimvars();
-
-        // Determine if this is a method (has class_attributes)
+        // For methods, also collect singleton definitions from __init__ class attributes
         let is_method = self
             .state
             .get(&Location::START)
             .map(|domain| domain.keys().any(|k| resolve(*k).starts_with("self.")))
             .unwrap_or(false);
 
-        // Check for undefined dimvars
-        for dimvar_name in return_dimvar_names {
-            if !defined_dimvar_names.contains(&dimvar_name) {
-                // Use the return type's span
-                return Err(anyhow!(ShapeError::UndefinedReturnDimVar {
+        if is_method {
+            if let Some(domain) = self.state.get(&Location::START) {
+                for (ident_str, vars) in domain {
+                    let name = resolve(*ident_str);
+                    if name.starts_with("self.") {
+                        for var in vars {
+                            singleton_definitions
+                                .extend(var.collect_singleton_dimvar_definitions());
+                        }
+                    }
+                }
+            }
+        }
+
+        // Step 2: Collect ALL used dimvars (from parameters AND return)
+        let mut all_used_dimvars = HashSet::new();
+        for Parameter(_, var_opt) in &func.param_types {
+            if let Some(var) = var_opt {
+                all_used_dimvars.extend(var.collect_symbolic_dimvars());
+            }
+        }
+        if let Some((ret_var, _)) = &func.return_type {
+            all_used_dimvars.extend(ret_var.collect_symbolic_dimvars());
+        }
+
+        // Step 3: Check all used dimvars have singleton definitions
+        for dimvar_name in all_used_dimvars {
+            if !singleton_definitions.contains(&dimvar_name) {
+                // Get appropriate span - prefer return type span if available, else function span
+                let span = func
+                    .return_type
+                    .as_ref()
+                    .map(|(_, s)| *s)
+                    .unwrap_or(func.span);
+
+                return Err(anyhow!(ShapeError::MissingSingletonDimVar {
                     dimvar_name,
-                    func_name: resolve(func.identifier).to_string(),
                     is_method,
-                    span: *ret_span,
+                    span,
                 }));
             }
         }
@@ -1049,7 +1058,8 @@ impl FunctionAnalysis {
                             // Check if any inferred variable matches the expected return type
                             // Variable::Top is considered compatible (represents uncertain analysis state)
                             let has_match = inferred_vars.iter().any(|inferred_var| {
-                                inferred_var == &Variable::Top || inferred_var == &expected_return_var
+                                inferred_var == &Variable::Top
+                                    || inferred_var == &expected_return_var
                             });
 
                             if !has_match {

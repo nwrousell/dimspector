@@ -136,12 +136,11 @@ pub enum ShapeError {
         span: SourceSpan,
     },
 
-    /// Return type uses dimension variable not defined by parameters
-    #[error("return type uses dimension `{dimvar_name}` which is not defined by any parameter")]
-    #[diagnostic(code(shape::undefined_return_dimvar))]
-    UndefinedReturnDimVar {
+    /// Symbolic dimvar used but not defined as singleton in parameters
+    #[error("dimension `{dimvar_name}` must appear as an integer parameter or standalone in a tensor parameter annotation{}", if *is_method { " (or in __init__ parameters)" } else { "" })]
+    #[diagnostic(code(shape::missing_singleton_dimvar))]
+    MissingSingletonDimVar {
         dimvar_name: String,
-        func_name: String,
         is_method: bool,
         span: SourceSpan,
     },
@@ -248,28 +247,6 @@ impl ShapeError {
 
         // Customize messages for specific error types
         let message = match self {
-            ShapeError::UndefinedReturnDimVar {
-                dimvar_name,
-                is_method,
-                ..
-            } => {
-                let base = format!(
-                    "return type uses dimension `{}` which is not defined by any parameter",
-                    dimvar_name
-                );
-                let hint = if *is_method {
-                    format!(
-                        "\nHelp: dimension `{}` must appear in a function parameter or in __init__ parameters",
-                        dimvar_name
-                    )
-                } else {
-                    format!(
-                        "\nHelp: dimension `{}` must appear in a function parameter",
-                        dimvar_name
-                    )
-                };
-                format!("{}{}", base, hint)
-            }
             ShapeError::UndefinedDimVar {
                 dimvar_name,
                 substitutions,
@@ -345,7 +322,7 @@ impl ShapeError {
             | ShapeError::MissingArgument { span, .. }
             | ShapeError::MatmulWithScalar { span, .. }
             | ShapeError::UndefinedDimVar { span, .. }
-            | ShapeError::UndefinedReturnDimVar { span, .. }
+            | ShapeError::MissingSingletonDimVar { span, .. }
             | ShapeError::ReturnTypeMismatch { span, .. } => {
                 (Self::span_to_range(span, file_content), None)
             }
