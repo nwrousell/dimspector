@@ -1030,9 +1030,61 @@ impl FunctionAnalysis {
                     self.eval_expr(domain, expr, global)?;
                 }
             }
-            Terminator::Return(expr) => {
-                if let Some(expr) = expr {
-                    self.eval_expr(domain, expr, global)?;
+            Terminator::Return(expr_opt) => {
+                // If function has an annotated return type, check the return statement against it
+                if let Some((expected_return_var, _)) = &self.function.return_type {
+                    let expected_return_var = expected_return_var.clone(); // Clone to avoid borrow issues
+
+                    // Only check return types for DimVar and Tensor annotations
+                    let should_check = matches!(
+                        expected_return_var,
+                        Variable::DimVar(_) | Variable::Tensor(_)
+                    );
+
+                    if should_check {
+                        if let Some(expr) = expr_opt {
+                            // Evaluate the return expression to get inferred types
+                            let inferred_vars = self.eval_expr(domain, expr, global)?;
+
+                            // Check if any inferred variable matches the expected return type
+                            // Variable::Top is considered compatible (represents uncertain analysis state)
+                            let has_match = inferred_vars.iter().any(|inferred_var| {
+                                inferred_var == &Variable::Top || inferred_var == &expected_return_var
+                            });
+
+                            if !has_match {
+                                // Collect all non-Top inferred variables
+                                let actual_vars: Vec<Variable> = inferred_vars
+                                    .into_iter()
+                                    .filter(|v| !matches!(v, Variable::Top))
+                                    .collect();
+
+                                return Err(anyhow!(ShapeError::ReturnTypeMismatch {
+                                    func_name: resolve(self.id),
+                                    expected: expected_return_var,
+                                    actual: actual_vars,
+                                    span: expr.span,
+                                }));
+                            }
+                        } else {
+                            // Function has return type annotation but return statement has no value
+                            return Err(anyhow!(
+                                "Function {} expects return type {:?} but got empty return",
+                                resolve(self.id),
+                                expected_return_var
+                            ));
+                        }
+                    } else {
+                        // No checking for other Variable types, just evaluate the expression
+                        if let Some(expr) = expr_opt {
+                            self.eval_expr(domain, expr, global)?;
+                        }
+                    }
+                } else {
+                    // No annotated return type, just evaluate the expression if present
+                    if let Some(expr) = expr_opt {
+                        self.eval_expr(domain, expr, global)?;
+                    }
                 }
             }
             Terminator::Jump(_) => (),

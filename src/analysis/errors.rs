@@ -2,7 +2,7 @@ use miette::{Diagnostic, SourceSpan};
 use thiserror::Error;
 use tower_lsp::lsp_types::{Diagnostic as LspDiagnostic, DiagnosticSeverity, Position, Range};
 
-use crate::analysis::{DimVar, Shape};
+use crate::analysis::{DimVar, Shape, Variable};
 
 #[derive(Diagnostic, Error, Debug, Clone)]
 pub enum ShapeError {
@@ -145,6 +145,24 @@ pub enum ShapeError {
         is_method: bool,
         span: SourceSpan,
     },
+
+    /// Return statement value doesn't match annotated return type
+    #[error("return type mismatch: expected {expected}, got {}", format_variables(&actual))]
+    #[diagnostic(code(shape::return_type_mismatch))]
+    ReturnTypeMismatch {
+        func_name: String,
+        expected: Variable,
+        actual: Vec<Variable>,
+        #[label("returns {} but return is annotated as {expected}", format_variables(&actual))]
+        span: SourceSpan,
+    },
+}
+
+fn format_variables(vars: &[Variable]) -> String {
+    vars.iter()
+        .map(|v| format!("{}", v))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 impl ShapeError {
@@ -230,16 +248,33 @@ impl ShapeError {
 
         // Customize messages for specific error types
         let message = match self {
-            ShapeError::UndefinedReturnDimVar { dimvar_name, is_method, .. } => {
-                let base = format!("return type uses dimension `{}` which is not defined by any parameter", dimvar_name);
+            ShapeError::UndefinedReturnDimVar {
+                dimvar_name,
+                is_method,
+                ..
+            } => {
+                let base = format!(
+                    "return type uses dimension `{}` which is not defined by any parameter",
+                    dimvar_name
+                );
                 let hint = if *is_method {
-                    format!("\nHelp: dimension `{}` must appear in a function parameter or in __init__ parameters", dimvar_name)
+                    format!(
+                        "\nHelp: dimension `{}` must appear in a function parameter or in __init__ parameters",
+                        dimvar_name
+                    )
                 } else {
-                    format!("\nHelp: dimension `{}` must appear in a function parameter", dimvar_name)
+                    format!(
+                        "\nHelp: dimension `{}` must appear in a function parameter",
+                        dimvar_name
+                    )
                 };
                 format!("{}{}", base, hint)
             }
-            ShapeError::UndefinedDimVar { dimvar_name, substitutions, .. } => {
+            ShapeError::UndefinedDimVar {
+                dimvar_name,
+                substitutions,
+                ..
+            } => {
                 format!(
                     "dimension `{}` is not defined by any parameter\nAvailable substitutions: {}",
                     dimvar_name, substitutions
@@ -310,7 +345,8 @@ impl ShapeError {
             | ShapeError::MissingArgument { span, .. }
             | ShapeError::MatmulWithScalar { span, .. }
             | ShapeError::UndefinedDimVar { span, .. }
-            | ShapeError::UndefinedReturnDimVar { span, .. } => {
+            | ShapeError::UndefinedReturnDimVar { span, .. }
+            | ShapeError::ReturnTypeMismatch { span, .. } => {
                 (Self::span_to_range(span, file_content), None)
             }
             // For errors without spans, use a default range at the start of the file
@@ -346,9 +382,16 @@ impl ShapeError {
 /// Context for where a generic analysis error occurred
 #[derive(Debug, Clone)]
 pub enum ErrorContext {
-    Class { name: String },
-    Function { name: String },
-    Method { class_name: String, method_name: String },
+    Class {
+        name: String,
+    },
+    Function {
+        name: String,
+    },
+    Method {
+        class_name: String,
+        method_name: String,
+    },
 }
 
 impl std::fmt::Display for ErrorContext {
@@ -356,7 +399,10 @@ impl std::fmt::Display for ErrorContext {
         match self {
             ErrorContext::Class { name } => write!(f, "class {}", name),
             ErrorContext::Function { name } => write!(f, "function {}", name),
-            ErrorContext::Method { class_name, method_name } => {
+            ErrorContext::Method {
+                class_name,
+                method_name,
+            } => {
                 write!(f, "method {}.{}", class_name, method_name)
             }
         }

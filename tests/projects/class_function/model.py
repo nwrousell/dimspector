@@ -11,4 +11,5 @@ class LinearModel(torch.nn.Module):
     def forward(self, x: Float[Tensor, "batch in_features"]) -> Float[Tensor, "batch out_features"]:
         """Forward pass."""
         out = x @ torch.transpose(self.weight, 0, 1) + self.bias
+        out = torch.cat((out, out))
         return out
