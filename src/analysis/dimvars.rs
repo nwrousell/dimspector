@@ -17,6 +17,21 @@ pub fn parse_dimvar(s: &str) -> Result<DimVar> {
     Ok(out)
 }
 
+/// Format a substitution map as a human-readable string
+/// If empty, returns "none", otherwise returns "key1 -> value1, key2 -> value2, ..."
+pub fn format_substitutions(map: &HashMap<String, DimVar>) -> String {
+    if map.is_empty() {
+        "none".to_string()
+    } else {
+        let mut subs: Vec<_> = map.iter().collect();
+        subs.sort_by_key(|(k, _)| *k);
+        subs.iter()
+            .map(|(k, v)| format!("{} -> {}", k, v))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
 struct Parser<'a> {
     it: Chars<'a>,
     look: Option<char>,
@@ -409,6 +424,7 @@ impl DimVar {
                 anyhow!(ShapeError::UndefinedDimVar {
                     dimvar_name: name.clone(),
                     func_name: func_name.to_string(),
+                    substitutions: format_substitutions(map),
                     span,
                 })
             })?,

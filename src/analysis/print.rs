@@ -32,8 +32,7 @@ impl fmt::Display for Variable {
             Variable::Collection(collection) => write!(f, "{}", collection),
             Variable::None => write!(f, "None"),
             Variable::ClassInstance(instance) => {
-                use crate::ir::types::resolve;
-                write!(f, "{}", resolve(instance.class_id))?;
+                write!(f, "{}", instance.class_name)?;
                 if !instance.substitutions.is_empty() {
                     write!(f, "{{")?;
                     let mut first = true;

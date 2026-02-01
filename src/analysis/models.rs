@@ -936,11 +936,28 @@ impl Model for TransposeModel {
     }
 }
 
+/// Diagnostic information for a dimvar binding
+#[derive(Debug, Clone)]
+struct DiagnosticInfo {
+    span: SourceSpan,
+    shape: Option<Shape>, // None for single DimVar params
+    param_name: String,
+}
+
+/// A paired parameter and argument for signature checking
+struct ParamArgPair<'a> {
+    param_var: &'a Variable,
+    arg_var: &'a Variable,
+    param_name: String,
+    arg_span: SourceSpan,
+}
+
 #[derive(Debug, Clone)]
 pub struct SignatureModel {
     pub name: String,
     pub param_types: Vec<Parameter>,
     pub return_type: Option<Variable>,
+    pub prefilled_substitutions: HashMap<String, DimVar>,
 }
 
 impl SignatureModel {
@@ -949,33 +966,19 @@ impl SignatureModel {
             name: resolve(func.identifier),
             param_types: func.param_types.clone(),
             return_type: func.return_type.as_ref().map(|(var, _span)| var.clone()),
+            prefilled_substitutions: HashMap::new(),
         }
     }
-}
-impl Model for SignatureModel {
-    fn infer(
-        &self,
-        args: Vec<&Variable>,
-        kwargs: HashMap<Identifier, &Variable>,
+
+    /// Pass 0: Build param-arg pairs by matching positional and keyword arguments to parameters
+    fn build_param_arg_pairs<'a>(
+        &'a self,
+        args: &'a [&'a Variable],
+        kwargs: &'a HashMap<Identifier, &'a Variable>,
         span: SourceSpan,
         arg_spans: &ArgSpans,
-    ) -> Result<Variable> {
-        // Track dimvar bindings with the span, shape, and param name where they were first bound
-        // (DimVar, SourceSpan, Option<Shape>, param_name) - shape is None for single DimVar args
-        let mut param_to_arg: HashMap<String, (DimVar, SourceSpan, Option<Shape>, String)> =
-            HashMap::new();
-
-        // Track deferred constraints for expression dimvars (like k-1) that need substitution
-        struct DeferredConstraint<'a> {
-            arg_dv: &'a DimVar,
-            param_dv: &'a DimVar,
-            param_name: String,
-            // None for single DimVar params, Some for Tensor params
-            arg_shape: Option<Shape>,
-            param_shape: Option<Shape>,
-            arg_span: SourceSpan,
-        }
-        let mut deferred_constraints: Vec<DeferredConstraint> = Vec::new();
+    ) -> Result<Vec<ParamArgPair<'a>>> {
+        let mut pairs = Vec::new();
 
         for (arg_idx, argv) in args.iter().zip_longest(self.param_types.iter()).enumerate() {
             let (arg_v, param, arg_span) = match argv {
@@ -998,172 +1001,293 @@ impl Model for SignatureModel {
                     let arg_span = arg_spans.get_keyword(param.0).unwrap_or(span);
                     (arg_v, (param, param_v), arg_span)
                 }
-                EitherOrBoth::Left(_) => unreachable!("args should not be longer than params"),
+                EitherOrBoth::Left(_) => {
+                    return Err(anyhow!(
+                        "Too many arguments provided to function '{}': expected {} parameters but got {} arguments",
+                        self.name,
+                        self.param_types.len(),
+                        args.len()
+                    ));
+                }
             };
 
             let (param_info, param_v) = param;
             let param_name = resolve(param_info.0);
 
-            match (arg_v, param_v) {
-                (Variable::DimVar(arg_dv), Variable::DimVar(param_dv)) => {
-                    match param_dv.kind() {
-                        DimKind::Named(name) => {
-                            if let Some((prev_arg_dv, first_span, first_shape, first_param_name)) =
-                                param_to_arg.get(&name)
-                            {
-                                if prev_arg_dv != arg_dv {
-                                    return Err(anyhow!(ShapeError::InconsistentDimVars {
-                                        func_name: self.name.clone(),
-                                        dimvar_name: name.clone(),
-                                        first_param_name: first_param_name.clone(),
-                                        second_param_name: param_name.clone(),
-                                        first_resolved: prev_arg_dv.clone(),
-                                        second_resolved: arg_dv.clone(),
-                                        first_shape: first_shape.clone(),
-                                        second_shape: None,
-                                        first_span: *first_span,
-                                        second_span: arg_span,
-                                    }));
-                                }
-                            } else {
-                                param_to_arg.insert(
-                                    name,
-                                    (arg_dv.clone(), arg_span, None, param_name.clone()),
-                                );
-                            }
+            pairs.push(ParamArgPair {
+                param_var: param_v,
+                arg_var: arg_v,
+                param_name,
+                arg_span,
+            });
+        }
+
+        Ok(pairs)
+    }
+
+    /// Pass 1: Build substitution map by extracting Named dimvars from param/arg pairs
+    /// Only handles DimVar::Named cases; skips Concrete, Add, Mul (handled in pass 2)
+    fn build_substitutions(
+        &self,
+        param: &Variable,
+        arg: &Variable,
+        param_name: &str,
+        arg_span: SourceSpan,
+        substitutions: &mut HashMap<String, DimVar>,
+        diagnostics: &mut HashMap<String, DiagnosticInfo>,
+    ) -> Result<()> {
+        match (param, arg) {
+            (Variable::DimVar(param_dv), Variable::DimVar(arg_dv)) => {
+                if let DimKind::Named(name) = param_dv.kind() {
+                    if let Some(diag) = diagnostics.get(&name) {
+                        // Already bound, check consistency
+                        let prev_arg_dv = substitutions.get(&name).unwrap();
+                        if prev_arg_dv != arg_dv {
+                            return Err(anyhow!(ShapeError::InconsistentDimVars {
+                                func_name: self.name.clone(),
+                                dimvar_name: name.clone(),
+                                first_param_name: diag.param_name.clone(),
+                                second_param_name: param_name.to_string(),
+                                first_resolved: prev_arg_dv.clone(),
+                                second_resolved: arg_dv.clone(),
+                                first_shape: diag.shape.clone(),
+                                second_shape: None,
+                                first_span: diag.span,
+                                second_span: arg_span,
+                            }));
                         }
+                    } else {
+                        // First binding of this dimvar
+                        substitutions.insert(name.clone(), arg_dv.clone());
+                        diagnostics.insert(
+                            name,
+                            DiagnosticInfo {
+                                span: arg_span,
+                                shape: None,
+                                param_name: param_name.to_string(),
+                            },
+                        );
+                    }
+                }
+                // Skip Concrete, Add, Mul - they're checked in pass 2
+            }
+            (Variable::Tensor(param_shape), Variable::Tensor(arg_shape)) => {
+                // Check rank first
+                let param_dims = &param_shape.0;
+                let arg_dims = &arg_shape.0;
+                if param_dims.len() != arg_dims.len() {
+                    return Err(anyhow!(ShapeError::UnequalRank {
+                        tensor_1: arg_shape.clone(),
+                        tensor_2: param_shape.clone(),
+                        rank_1: arg_dims.len(),
+                        rank_2: param_dims.len(),
+                        span: arg_span,
+                    }));
+                }
+
+                // for each dimension, check for named dimvars
+                for (param_dv, arg_dv) in param_dims.iter().zip(arg_dims.iter()) {
+                    if let DimKind::Named(name) = param_dv.kind() {
+                        if let Some(diag) = diagnostics.get(&name) {
+                            // Already bound, check consistency
+                            let prev_arg_dv = substitutions.get(&name).unwrap();
+                            if prev_arg_dv != arg_dv {
+                                return Err(anyhow!(ShapeError::InconsistentDimVars {
+                                    func_name: self.name.clone(),
+                                    dimvar_name: name.clone(),
+                                    first_param_name: diag.param_name.clone(),
+                                    second_param_name: param_name.to_string(),
+                                    first_resolved: prev_arg_dv.clone(),
+                                    second_resolved: arg_dv.clone(),
+                                    first_shape: diag.shape.clone(),
+                                    second_shape: Some(arg_shape.clone()),
+                                    first_span: diag.span,
+                                    second_span: arg_span,
+                                }));
+                            }
+                        } else {
+                            // First binding of this dimvar
+                            substitutions.insert(name.clone(), arg_dv.clone());
+                            diagnostics.insert(
+                                name,
+                                DiagnosticInfo {
+                                    span: arg_span,
+                                    shape: Some(arg_shape.clone()),
+                                    param_name: param_name.to_string(),
+                                },
+                            );
+                        }
+                    }
+                    // Skip non-Named dimvars (Concrete, Add, Mul) - handled in pass 2
+                }
+            }
+            (Variable::Collection(param_col), Variable::Collection(arg_col)) => {
+                // Recurse on collection elements
+                match (param_col, arg_col) {
+                    (Collection::Tuple(param_vars), Collection::Tuple(arg_vars))
+                    | (Collection::List(param_vars), Collection::List(arg_vars)) => {
+                        for (param_v, arg_v) in param_vars.iter().zip(arg_vars.iter()) {
+                            self.build_substitutions(
+                                param_v,
+                                arg_v,
+                                param_name,
+                                arg_span,
+                                substitutions,
+                                diagnostics,
+                            )?;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Pass 2: Check constraints by substituting param dimvars and comparing with args
+    /// Handles all dimvars including Concrete, Named, Add, Mul after substitution map is built
+    fn check_constraints(
+        &self,
+        param: &Variable,
+        arg: &Variable,
+        param_name: &str,
+        arg_span: SourceSpan,
+        substitutions: &HashMap<String, DimVar>,
+    ) -> Result<()> {
+        match (param, arg) {
+            (Variable::DimVar(param_dv), Variable::DimVar(arg_dv)) => {
+                match param_dv.kind() {
+                    DimKind::Concrete(_) => {
+                        // Concrete dims: check equality directly
+                        if param_dv != arg_dv {
+                            return Err(anyhow!(ShapeError::MismatchedDims {
+                                dim1: arg_dv.clone(),
+                                dim2: param_dv.clone(),
+                                span: arg_span,
+                            }));
+                        }
+                    }
+                    DimKind::Named(_) | DimKind::Add { .. } | DimKind::Mul { .. } => {
+                        // Named and expression dimvars: substitute and check
+                        let expected_dv =
+                            param_dv.substitute(substitutions, &self.name, arg_span)?;
+                        if expected_dv != *arg_dv {
+                            return Err(anyhow!(ShapeError::MismatchedDims {
+                                dim1: arg_dv.clone(),
+                                dim2: expected_dv,
+                                span: arg_span,
+                            }));
+                        }
+                    }
+                }
+            }
+            (Variable::Tensor(param_shape), Variable::Tensor(arg_shape)) => {
+                // Rank already checked in pass 1
+                let param_dims = &param_shape.0;
+                let arg_dims = &arg_shape.0;
+
+                // Check each dimension constraint
+                for (param_dv, arg_dv) in param_dims.iter().zip(arg_dims.iter()) {
+                    match param_dv.kind() {
                         DimKind::Concrete(_) => {
-                            // Concrete dims can be checked immediately
-                            if arg_dv != param_dv {
-                                return Err(anyhow!(ShapeError::MismatchedDims {
-                                    dim1: arg_dv.clone(),
-                                    dim2: param_dv.clone(),
+                            if param_dv != arg_dv {
+                                return Err(anyhow!(ShapeError::SignatureParamMismatch {
+                                    func_name: self.name.clone(),
+                                    param_name: param_name.to_string(),
+                                    expected: param_shape.clone(),
+                                    actual: arg_shape.clone(),
                                     span: arg_span,
                                 }));
                             }
                         }
-                        // Expression dimvars (Add, Mul) need deferred checking
-                        _ => {
-                            deferred_constraints.push(DeferredConstraint {
-                                arg_dv,
-                                param_dv,
-                                param_name: param_name.clone(),
-                                arg_shape: None,
-                                param_shape: None,
+                        DimKind::Named(_) | DimKind::Add { .. } | DimKind::Mul { .. } => {
+                            let expected_dv =
+                                param_dv.substitute(substitutions, &self.name, arg_span)?;
+                            if expected_dv != *arg_dv {
+                                return Err(anyhow!(ShapeError::SignatureParamMismatch {
+                                    func_name: self.name.clone(),
+                                    param_name: param_name.to_string(),
+                                    expected: param_shape.clone(),
+                                    actual: arg_shape.clone(),
+                                    span: arg_span,
+                                }));
+                            }
+                        }
+                    }
+                }
+            }
+            (Variable::Collection(param_col), Variable::Collection(arg_col)) => {
+                // Recurse on collection elements
+                match (param_col, arg_col) {
+                    (Collection::Tuple(param_vars), Collection::Tuple(arg_vars))
+                    | (Collection::List(param_vars), Collection::List(arg_vars)) => {
+                        for (param_v, arg_v) in param_vars.iter().zip(arg_vars.iter()) {
+                            self.check_constraints(
+                                param_v,
+                                arg_v,
+                                param_name,
                                 arg_span,
-                            });
+                                substitutions,
+                            )?;
                         }
                     }
+                    _ => {}
                 }
-                (Variable::Tensor(arg_shape), Variable::Tensor(param_shape)) => {
-                    let arg_dims = &arg_shape.0;
-                    let param_dims = &param_shape.0;
-                    if arg_dims.len() != param_dims.len() {
-                        return Err(anyhow!(ShapeError::UnequalRank {
-                            tensor_1: arg_shape.clone(),
-                            tensor_2: param_shape.clone(),
-                            rank_1: arg_dims.len(),
-                            rank_2: param_dims.len(),
-                            span: arg_span,
-                        }));
-                    }
-
-                    for (arg_dv, param_dv) in arg_dims.iter().zip(param_dims.iter()) {
-                        match param_dv.kind() {
-                            DimKind::Named(name) => {
-                                if let Some((
-                                    prev_arg_dv,
-                                    first_span,
-                                    first_shape,
-                                    first_param_name,
-                                )) = param_to_arg.get(&name)
-                                {
-                                    if prev_arg_dv != arg_dv {
-                                        return Err(anyhow!(ShapeError::InconsistentDimVars {
-                                            func_name: self.name.clone(),
-                                            dimvar_name: name.clone(),
-                                            first_param_name: first_param_name.clone(),
-                                            second_param_name: param_name.clone(),
-                                            first_resolved: prev_arg_dv.clone(),
-                                            second_resolved: arg_dv.clone(),
-                                            first_shape: first_shape.clone(),
-                                            second_shape: Some(arg_shape.clone()),
-                                            first_span: *first_span,
-                                            second_span: arg_span,
-                                        }));
-                                    }
-                                } else {
-                                    param_to_arg.insert(
-                                        name,
-                                        (
-                                            arg_dv.clone(),
-                                            arg_span,
-                                            Some(arg_shape.clone()),
-                                            param_name.clone(),
-                                        ),
-                                    );
-                                }
-                            }
-                            // Expression dimvars need deferred checking after all named ones are bound
-                            _ => {
-                                deferred_constraints.push(DeferredConstraint {
-                                    arg_dv,
-                                    param_dv,
-                                    param_name: param_name.clone(),
-                                    arg_shape: Some(arg_shape.clone()),
-                                    param_shape: Some(param_shape.clone()),
-                                    arg_span,
-                                });
-                            }
-                        }
-                    }
-                }
-                _ => continue,
             }
+            _ => {}
         }
+        Ok(())
+    }
+}
+impl Model for SignatureModel {
+    fn infer(
+        &self,
+        args: Vec<&Variable>,
+        kwargs: HashMap<Identifier, &Variable>,
+        span: SourceSpan,
+        arg_spans: &ArgSpans,
+    ) -> Result<Variable> {
+        // Initialize substitution map and diagnostic info
+        let mut substitutions: HashMap<String, DimVar> = HashMap::new();
+        let mut diagnostics: HashMap<String, DiagnosticInfo> = HashMap::new();
 
-        // Build substitution map (without spans/shapes) for constraint checking
-        let substitution_map: HashMap<String, DimVar> = param_to_arg
-            .iter()
-            .map(|(k, (dv, _, _, _))| (k.clone(), dv.clone()))
-            .collect();
+        // Merge prefilled substitutions from class instances
+        substitutions.extend(self.prefilled_substitutions.clone());
 
-        // Check deferred constraints (expression dimvars like k-1)
-        for constraint in deferred_constraints {
-            let expected_dv = constraint.param_dv.substitute(
-                &substitution_map,
-                &self.name,
-                constraint.arg_span,
+        // Pass 0: Build param-arg pairs
+        let pairs = self.build_param_arg_pairs(&args, &kwargs, span, arg_spans)?;
+
+        // Pass 1: Build substitution map by extracting Named dimvars
+        for pair in &pairs {
+            self.build_substitutions(
+                pair.param_var,
+                pair.arg_var,
+                &pair.param_name,
+                pair.arg_span,
+                &mut substitutions,
+                &mut diagnostics,
             )?;
-            if expected_dv != *constraint.arg_dv {
-                // Use SignatureParamMismatch for tensor shapes, MismatchedDims for single dimvars
-                match (constraint.param_shape, constraint.arg_shape) {
-                    (Some(param_shape), Some(arg_shape)) => {
-                        return Err(anyhow!(ShapeError::SignatureParamMismatch {
-                            func_name: self.name.clone(),
-                            param_name: constraint.param_name,
-                            expected: param_shape,
-                            actual: arg_shape,
-                            span: constraint.arg_span,
-                        }));
-                    }
-                    _ => {
-                        return Err(anyhow!(ShapeError::MismatchedDims {
-                            dim1: constraint.arg_dv.clone(),
-                            dim2: expected_dv,
-                            span: constraint.arg_span,
-                        }));
-                    }
-                }
-            }
         }
 
+        // Pass 2: Check constraints using completed substitution map
+        for pair in &pairs {
+            self.check_constraints(
+                pair.param_var,
+                pair.arg_var,
+                &pair.param_name,
+                pair.arg_span,
+                &substitutions,
+            )?;
+        }
+
+        // Infer return type by substituting with the completed substitution map
         let Some(ret_var) = &self.return_type else {
-            // TODO: we need to be able to use our analysis inferred return shape here
+            // TODO: if there's no annotation, we'd like to use our inferred return Variable here
             return Ok(Variable::Top);
         };
 
-        let substituted_ret = ret_var.substitute(&substitution_map, &self.name, span)?;
+        let substituted_ret = ret_var.substitute(&substitutions, &self.name, span)?;
 
         Ok(substituted_ret)
     }

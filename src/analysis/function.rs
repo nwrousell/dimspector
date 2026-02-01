@@ -591,7 +591,7 @@ impl FunctionAnalysis {
                 let Some(class_analysis) = global.classes.get(&instance.class_id) else {
                     log::debug!(
                         "couldn't find class analysis for {}, not in {:?}",
-                        resolve(instance.class_id),
+                        instance.class_name,
                         global
                             .classes
                             .keys()

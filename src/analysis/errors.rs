@@ -131,6 +131,7 @@ pub enum ShapeError {
     UndefinedDimVar {
         dimvar_name: String,
         func_name: String,
+        substitutions: String, // Human-readable representation of available substitutions
         #[label("dimension `{dimvar_name}` must appear in a function parameter to be used here")]
         span: SourceSpan,
     },
@@ -227,7 +228,7 @@ impl ShapeError {
     pub fn to_diagnostic(&self, file_content: &str, file_uri: &str) -> Option<LspDiagnostic> {
         use tower_lsp::lsp_types::{DiagnosticRelatedInformation, Location, Url};
 
-        // Customize message for UndefinedReturnDimVar based on is_method
+        // Customize messages for specific error types
         let message = match self {
             ShapeError::UndefinedReturnDimVar { dimvar_name, is_method, .. } => {
                 let base = format!("return type uses dimension `{}` which is not defined by any parameter", dimvar_name);
@@ -237,6 +238,12 @@ impl ShapeError {
                     format!("\nHelp: dimension `{}` must appear in a function parameter", dimvar_name)
                 };
                 format!("{}{}", base, hint)
+            }
+            ShapeError::UndefinedDimVar { dimvar_name, substitutions, .. } => {
+                format!(
+                    "dimension `{}` is not defined by any parameter\nAvailable substitutions: {}",
+                    dimvar_name, substitutions
+                )
             }
             _ => self.to_string(),
         };

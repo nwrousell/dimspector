@@ -2,7 +2,6 @@ use itertools::Either;
 
 use crate::analysis::dimvars::{DimKind, DimVar, parse_dimvar};
 use crate::ir::types::Identifier;
-use crate::ir::{Class, Expr};
 use anyhow::Result;
 use std::collections::{BTreeMap, HashMap};
 
@@ -108,6 +107,8 @@ pub enum DictKey {
 pub struct ClassInstance {
     /// The canonical identifier of the class (e.g., "module.ClassName")
     pub class_id: Identifier,
+    /// The human-readable class name (e.g., "ClassName")
+    pub class_name: String,
     /// Mapping from parameter dimvars to concrete dimvars
     pub substitutions: BTreeMap<DimVar, DimVar>,
 }
